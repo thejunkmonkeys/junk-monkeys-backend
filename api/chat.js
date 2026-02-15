@@ -26,9 +26,10 @@ function reply(res, text, extra = {}) {
 }
 
 function extractMessage(body) {
-  if (!body) return null;
+  if (!body) return "";
 
-  // common shapes
+  if (typeof body === "string") return body.trim();
+
   const direct =
     body.message ??
     body.text ??
@@ -38,15 +39,15 @@ function extractMessage(body) {
     body.question ??
     body.content;
 
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  if (typeof direct === "string") return direct.trim();
 
-  // sometimes message is nested
+  // sometimes nested
   if (body.data && typeof body.data === "object") return extractMessage(body.data);
 
-  return null;
+  return "";
 }
 
-// --- Postcode helpers ---
+// --- postcode helpers (internal use only)
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -61,73 +62,30 @@ function findPostcodeInText(text) {
   return m ? normalizePostcode(m[0]) : null;
 }
 
-// internal only (don’t show customer)
-function outwardCode(pcNoSpace) {
-  return pcNoSpace.slice(0, -3);
-}
-function isLocalPostcode(pcNoSpace) {
-  const outward = outwardCode(pcNoSpace);
-  if (outward.startsWith("WF")) return true;
-  const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
-  return localLS.has(outward);
-}
-
-// --- Waste type + extras detection (simple + safe) ---
 function detectWasteType(lower) {
-  // match the button words users will type
-  if (lower === "household" || lower.includes("household")) return "household";
-  if (lower === "business" || lower.includes("business") || lower.includes("commercial"))
-    return "business";
-  if (lower === "trade" || lower.includes("trade")) return "trade";
-  if (
-    lower === "green waste" ||
-    lower.includes("green waste") ||
-    lower.includes("green") ||
-    lower.includes("garden")
-  )
-    return "green_waste";
-  if (
-    lower.includes("single bulky") ||
-    lower.includes("bulky") ||
-    lower.includes("single item")
-  )
-    return "single_bulky_items";
-
+  if (lower.includes("household")) return "household";
+  if (lower.includes("business") || lower.includes("commercial")) return "business";
+  if (lower.includes("trade")) return "trade";
+  if (lower.includes("green") || lower.includes("garden")) return "green_waste";
+  if (lower.includes("bulky") || lower.includes("single")) return "single_bulky_items";
   return "unknown";
 }
 
 const EXTRAS_KEYWORDS = [
   "mattress",
-  "mattresses",
   "fridge",
-  "fridges",
   "freezer",
-  "freezers",
   "tyre",
-  "tyres",
   "tire",
-  "tires",
   "paint",
-  "tin of paint",
   "sofa",
-  "sofas",
   "armchair",
   "arm chair",
-  "arm chairs",
 ];
 
 function isExtrasAnswer(lower) {
-  if (
-    lower === "none" ||
-    lower === "no" ||
-    lower.includes("no extras") ||
-    lower.includes("nothing extra")
-  )
-    return true;
-
-  if (EXTRAS_KEYWORDS.some((k) => lower.includes(k))) return true;
-
-  return false;
+  if (lower === "none" || lower === "no" || lower.includes("no extras")) return true;
+  return EXTRAS_KEYWORDS.some((k) => lower.includes(k));
 }
 
 export default async function handler(req, res) {
@@ -136,45 +94,40 @@ export default async function handler(req, res) {
 
     if (req.method === "OPTIONS") return res.status(204).end();
 
-    // IMPORTANT: Always return JSON (never throw)
     if (req.method !== "POST") {
       return reply(res, "Method not allowed", { ok: false });
     }
 
     const body = req.body || {};
-    const message = (extractMessage(body) || "").trim();
-    const lower = message.toLowerCase();
+    const message = extractMessage(body);
+    const lower = (message || "").toLowerCase();
 
-    // Debug (helps in Vercel logs)
-    console.log("Incoming /chat body:", body);
-    console.log("Parsed message:", message);
-
+    // Always respond even if message missing
     if (!message) {
       return reply(res, "No problem — what’s your postcode?");
     }
 
-    // 1) Postcode -> ask waste type
+    // If message contains a postcode -> ask waste type
     const pc = findPostcodeInText(message);
     if (pc) {
-      const local = isLocalPostcode(pc); // internal only
       return reply(
         res,
         "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
-        { postcode: pc, local_area: local, next_step: "waste_type" }
+        { next_step: "waste_type" }
       );
     }
 
-    // 2) Waste type -> ask extras
+    // If message looks like waste type -> ask extras
     const wasteType = detectWasteType(lower);
     if (wasteType !== "unknown") {
       return reply(
         res,
         "Thanks! Are there any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nPlease tell me how many of each (or say “none”).",
-        { waste_type: wasteType, next_step: "extras" }
+        { next_step: "extras", waste_type: wasteType }
       );
     }
 
-    // 3) Extras answer -> ask photos
+    // If message looks like extras answer -> ask photos
     if (isExtrasAnswer(lower)) {
       return reply(
         res,
@@ -183,23 +136,26 @@ export default async function handler(req, res) {
       );
     }
 
-    // 4) Price/quote -> ask postcode
-    const wantsPrice =
+    // Price intent -> ask postcode
+    if (
       lower.includes("how much") ||
       lower.includes("price") ||
       lower.includes("quote") ||
       lower.includes("cost") ||
-      lower.includes("charge");
-
-    if (wantsPrice) {
+      lower.includes("charge")
+    ) {
       return reply(res, "No problem — what’s your postcode?");
     }
 
     // Default
     return reply(res, "If you want a quote, tell me your postcode.");
-  } catch (err) {
-    console.error("CHAT ERROR:", err);
-    // Never break the widget
-    return reply(res, "Sorry — please try again.", { ok: false });
+  } catch (e) {
+    // Never let the widget “fail to fetch”
+    return res.status(200).json({
+      ok: false,
+      reply: "Sorry — please try again.",
+      text: "Sorry — please try again.",
+      message: "Sorry — please try again.",
+    });
   }
 }
