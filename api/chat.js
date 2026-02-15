@@ -45,6 +45,21 @@ function extractMessage(body) {
   return null;
 }
 
+function getMessagesArray(body) {
+  const msgs = body?.messages ?? body?.chat ?? body?.history ?? body?.conversation;
+  return Array.isArray(msgs) ? msgs : [];
+}
+
+function lastAssistantText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const role = (m?.role || m?.type || "").toString().toLowerCase();
+    const content = (m?.content ?? m?.text ?? m?.message ?? "").toString();
+    if ((role === "assistant" || role === "bot") && content) return content;
+  }
+  return "";
+}
+
 function reply(res, text, extra = {}) {
   return res.status(200).json({
     ok: true,
@@ -55,6 +70,7 @@ function reply(res, text, extra = {}) {
   });
 }
 
+// --- Postcode helpers ---
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -69,16 +85,64 @@ function findPostcodeInText(text) {
   return m ? normalizePostcode(m[0]) : null;
 }
 
+// Keep this internal for later (don’t show customer)
 function outwardCode(pcNoSpace) {
   return pcNoSpace.slice(0, -3);
 }
-
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
-
   const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
   return localLS.has(outward);
+}
+
+// --- Flow helpers ---
+function detectWasteType(lower) {
+  if (lower.includes("house")) return "household";
+  if (lower.includes("business") || lower.includes("commercial")) return "business";
+  if (lower.includes("trade")) return "trade";
+  if (lower.includes("green") || lower.includes("garden")) return "green_waste";
+  if (
+    lower.includes("bulky") ||
+    lower.includes("single bulky") ||
+    lower.includes("single item")
+  )
+    return "single_bulky_items";
+  return "unknown";
+}
+
+const EXTRAS_KEYWORDS = [
+  "mattress",
+  "mattresses",
+  "fridge",
+  "fridges",
+  "freezer",
+  "freezers",
+  "tyre",
+  "tyres",
+  "tire",
+  "tires",
+  "paint",
+  "tin of paint",
+  "sofa",
+  "sofas",
+  "armchair",
+  "arm chair",
+  "arm chairs",
+];
+
+function looksLikeExtrasAnswer(lower) {
+  if (
+    lower === "no" ||
+    lower === "none" ||
+    lower.includes("no extras") ||
+    lower.includes("nothing extra")
+  ) return true;
+
+  if (EXTRAS_KEYWORDS.some((k) => lower.includes(k))) return true;
+
+  // IMPORTANT: we DO NOT treat "any number" as extras (that broke the flow)
+  return false;
 }
 
 export default async function handler(req, res) {
@@ -94,52 +158,13 @@ export default async function handler(req, res) {
   const message = (extractMessage(body) || "").trim();
   const lower = message.toLowerCase();
 
-  // If user included a postcode anywhere, we store/compute local internally but DON'T tell them
-  const foundPc = findPostcodeInText(message);
-  if (foundPc) {
-    const local = isLocalPostcode(foundPc); // internal only (for later use)
+  const messages = getMessagesArray(body);
+  const lastBot = (lastAssistantText(messages) || "").toLowerCase();
 
-    return reply(
-      res,
-      "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
-      { postcode: foundPc, local_area: local }
-    );
-  }
+  const botAskedWasteType =
+    lastBot.includes("what type of rubbish") ||
+    lastBot.includes("household / business") ||
+    lastBot.includes("single bulky");
 
-  // If user asks about price/quote/cost, ask for postcode
-  const wantsPriceOrQuote =
-    lower.includes("how much") ||
-    lower.includes("price") ||
-    lower.includes("quote") ||
-    lower.includes("cost") ||
-    lower.includes("charge");
-
-  if (wantsPriceOrQuote) {
-    return reply(res, "No problem — what’s your postcode?");
-  }
-
-  // If they mention any waste type without giving postcode, ask postcode first
-  const mentionsWasteType =
-    lower.includes("household") ||
-    lower.includes("business") ||
-    lower.includes("trade") ||
-    lower.includes("green") ||
-    lower.includes("garden") ||
-    lower.includes("bulky") ||
-    lower.includes("single item");
-
-  if (mentionsWasteType) {
-    return reply(res, "Thanks — what’s your postcode?");
-  }
-
-  // Booking intent
-  if (lower.includes("book")) {
-    return reply(
-      res,
-      "You can book instantly using the pink button above. If you want a quick estimate first, tell me your postcode."
-    );
-  }
-
-  // Default
-  return reply(res, "Hi! If you want a quote, tell me your postcode.");
-}
+  const botAskedExtras =
+    lastBot.includes("any extr
