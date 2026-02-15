@@ -15,7 +15,6 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
-// Extract message from different payload shapes
 function extractMessage(body) {
   if (!body) return null;
 
@@ -56,7 +55,6 @@ function reply(res, text, extra = {}) {
   });
 }
 
-// Normalize + validate UK postcode (simple)
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -64,7 +62,6 @@ function normalizePostcode(raw) {
   return m ? s : null;
 }
 
-// Find a postcode anywhere in a sentence
 function findPostcodeInText(text) {
   if (!text) return null;
   const s = text.toUpperCase().replace(/\s+/g, "");
@@ -77,7 +74,7 @@ function outwardCode(pcNoSpace) {
 }
 
 function isLocalPostcode(pcNoSpace) {
-  const outward = outwardCode(pcNoSpace); // e.g. WF1, LS10, LS27
+  const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
 
   const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
@@ -97,27 +94,19 @@ export default async function handler(req, res) {
   const message = (extractMessage(body) || "").trim();
   const lower = message.toLowerCase();
 
-  // 1) If user included a postcode anywhere, classify it
+  // If user included a postcode anywhere, we store/compute local internally but DON'T tell them
   const foundPc = findPostcodeInText(message);
   if (foundPc) {
-    const local = isLocalPostcode(foundPc);
-
-    if (local) {
-      return reply(
-        res,
-        `Thanks! ✅ ${foundPc} is in our local area.\nWhat are we removing? (Household / Garden waste / Business waste / Single item)`,
-        { postcode: foundPc, local_area: true }
-      );
-    }
+    const local = isLocalPostcode(foundPc); // internal only (for later use)
 
     return reply(
       res,
-      `Thanks! ℹ️ ${foundPc} is outside our local area.\nFor now, please use the booking button above or contact us, and we’ll confirm availability.\nWhat are we removing? (Household / Garden waste / Business waste / Single item)`,
-      { postcode: foundPc, local_area: false }
+      "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
+      { postcode: foundPc, local_area: local }
     );
   }
 
-  // 2) If user asks about price/quote/cost, ALWAYS ask postcode
+  // If user asks about price/quote/cost, ask for postcode
   const wantsPriceOrQuote =
     lower.includes("how much") ||
     lower.includes("price") ||
@@ -126,10 +115,24 @@ export default async function handler(req, res) {
     lower.includes("charge");
 
   if (wantsPriceOrQuote) {
-    return reply(res, "No problem — what’s your postcode? (e.g. WF1 1AA or LS10 1AB)");
+    return reply(res, "No problem — what’s your postcode?");
   }
 
-  // 3) Booking intent
+  // If they mention any waste type without giving postcode, ask postcode first
+  const mentionsWasteType =
+    lower.includes("household") ||
+    lower.includes("business") ||
+    lower.includes("trade") ||
+    lower.includes("green") ||
+    lower.includes("garden") ||
+    lower.includes("bulky") ||
+    lower.includes("single item");
+
+  if (mentionsWasteType) {
+    return reply(res, "Thanks — what’s your postcode?");
+  }
+
+  // Booking intent
   if (lower.includes("book")) {
     return reply(
       res,
@@ -137,14 +140,6 @@ export default async function handler(req, res) {
     );
   }
 
-  // 4) Garden mention → ask postcode
-  if (lower.includes("garden")) {
-    return reply(res, "We offer garden waste clearance. What’s your postcode so I can confirm if you’re local?");
-  }
-
   // Default
-  return reply(res, "Hi! Ask for a quote (tell me your postcode), or click ‘Get A Quote Or Book Now’ above.");
+  return reply(res, "Hi! If you want a quote, tell me your postcode.");
 }
-
-
-
