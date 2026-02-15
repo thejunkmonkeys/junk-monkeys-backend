@@ -55,7 +55,6 @@ function reply(res, text, extra = {}) {
   });
 }
 
-// --- Postcode helpers ---
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -77,72 +76,9 @@ function outwardCode(pcNoSpace) {
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
+
   const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
   return localLS.has(outward);
-}
-
-// --- Flow helpers ---
-function detectWasteType(lower) {
-  if (lower.includes("house")) return "household";
-  if (lower.includes("business") || lower.includes("commercial")) return "business";
-  if (lower.includes("trade")) return "trade";
-  if (lower.includes("green") || lower.includes("garden")) return "green_waste";
-  if (
-    lower.includes("bulky") ||
-    lower.includes("single item") ||
-    lower.includes("single bulky") ||
-    lower.includes("sofa") ||
-    lower.includes("arm chair") ||
-    lower.includes("armchair")
-  )
-    return "single_bulky_items";
-  return "unknown";
-}
-
-const EXTRA_KEYWORDS = [
-  "mattress",
-  "mattresses",
-  "fridge",
-  "fridges",
-  "freezer",
-  "freezers",
-  "tyre",
-  "tyres",
-  "tire",
-  "tires",
-  "paint",
-  "tin of paint",
-  "sofa",
-  "sofas",
-  "armchair",
-  "arm chair",
-  "chair",
-  "chairs",
-];
-
-// if the message looks like it is answering the "extras" question
-function looksLikeExtrasAnswer(lower) {
-  // explicit none
-  if (
-    lower === "no" ||
-    lower === "none" ||
-    lower.includes("no extras") ||
-    lower.includes("none") ||
-    lower.includes("nothing extra")
-  ) {
-    return true;
-  }
-
-  // contains any extras keyword
-  if (EXTRA_KEYWORDS.some((k) => lower.includes(k))) return true;
-
-  // contains numbers like "2 mattresses" / "1 fridge"
-  if (/\b\d+\b/.test(lower)) return true;
-
-  // contains "x" notation like "2x mattress"
-  if (/\b\d+\s*x\b/.test(lower)) return true;
-
-  return false;
 }
 
 export default async function handler(req, res) {
@@ -158,37 +94,19 @@ export default async function handler(req, res) {
   const message = (extractMessage(body) || "").trim();
   const lower = message.toLowerCase();
 
-  // 1) Postcode detected -> ask waste type
+  // If user included a postcode anywhere, we store/compute local internally but DON'T tell them
   const foundPc = findPostcodeInText(message);
   if (foundPc) {
-    const local = isLocalPostcode(foundPc); // internal only
+    const local = isLocalPostcode(foundPc); // internal only (for later use)
+
     return reply(
       res,
       "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
-      { postcode: foundPc, local_area: local, next_step: "waste_type" }
+      { postcode: foundPc, local_area: local }
     );
   }
 
-  // 2) Waste type detected -> ask extras
-  const wasteType = detectWasteType(lower);
-  if (wasteType !== "unknown") {
-    return reply(
-      res,
-      "Thanks! Any extras?\nMattress • Fridge • Freezer • Car tyres • Tin of paint • Sofas • Arm chairs\nPlease tell me how many of each (or say “none”).",
-      { waste_type: wasteType, next_step: "extras" }
-    );
-  }
-
-  // 3) Extras answer -> ask for photos
-  if (looksLikeExtrasAnswer(lower)) {
-    return reply(
-      res,
-      "Thanks! Please upload 1–3 photos of the rubbish (or type a short description) and we’ll estimate it.",
-      { next_step: "photos" }
-    );
-  }
-
-  // 4) Price/quote intent -> ask postcode
+  // If user asks about price/quote/cost, ask for postcode
   const wantsPriceOrQuote =
     lower.includes("how much") ||
     lower.includes("price") ||
@@ -198,6 +116,20 @@ export default async function handler(req, res) {
 
   if (wantsPriceOrQuote) {
     return reply(res, "No problem — what’s your postcode?");
+  }
+
+  // If they mention any waste type without giving postcode, ask postcode first
+  const mentionsWasteType =
+    lower.includes("household") ||
+    lower.includes("business") ||
+    lower.includes("trade") ||
+    lower.includes("green") ||
+    lower.includes("garden") ||
+    lower.includes("bulky") ||
+    lower.includes("single item");
+
+  if (mentionsWasteType) {
+    return reply(res, "Thanks — what’s your postcode?");
   }
 
   // Booking intent
