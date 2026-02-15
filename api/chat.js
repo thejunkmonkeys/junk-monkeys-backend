@@ -15,11 +15,20 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
+function reply(res, text, extra = {}) {
+  return res.status(200).json({
+    ok: true,
+    reply: text,
+    text,
+    message: text,
+    ...extra,
+  });
+}
+
 function extractMessage(body) {
   if (!body) return null;
 
-  if (typeof body === "string") return body.trim() || null;
-
+  // common shapes
   const direct =
     body.message ??
     body.text ??
@@ -31,43 +40,10 @@ function extractMessage(body) {
 
   if (typeof direct === "string" && direct.trim()) return direct.trim();
 
-  const msgs = body.messages ?? body.chat ?? body.history ?? body.conversation;
-  if (Array.isArray(msgs) && msgs.length) {
-    const last = msgs[msgs.length - 1];
-    if (typeof last === "string") return last.trim() || null;
-    if (typeof last?.content === "string") return last.content.trim() || null;
-    if (typeof last?.text === "string") return last.text.trim() || null;
-    if (typeof last?.message === "string") return last.message.trim() || null;
-  }
-
+  // sometimes message is nested
   if (body.data && typeof body.data === "object") return extractMessage(body.data);
 
   return null;
-}
-
-function getMessagesArray(body) {
-  const msgs = body?.messages ?? body?.chat ?? body?.history ?? body?.conversation;
-  return Array.isArray(msgs) ? msgs : [];
-}
-
-function lastAssistantText(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    const role = (m?.role || m?.type || "").toString().toLowerCase();
-    const content = (m?.content ?? m?.text ?? m?.message ?? "").toString();
-    if ((role === "assistant" || role === "bot") && content) return content;
-  }
-  return "";
-}
-
-function reply(res, text, extra = {}) {
-  return res.status(200).json({
-    ok: true,
-    reply: text,
-    text,
-    message: text,
-    ...extra,
-  });
 }
 
 // --- Postcode helpers ---
@@ -85,7 +61,7 @@ function findPostcodeInText(text) {
   return m ? normalizePostcode(m[0]) : null;
 }
 
-// Keep this internal for later (don’t show customer)
+// internal only (don’t show customer)
 function outwardCode(pcNoSpace) {
   return pcNoSpace.slice(0, -3);
 }
@@ -96,18 +72,27 @@ function isLocalPostcode(pcNoSpace) {
   return localLS.has(outward);
 }
 
-// --- Flow helpers ---
+// --- Waste type + extras detection (simple + safe) ---
 function detectWasteType(lower) {
-  if (lower.includes("house")) return "household";
-  if (lower.includes("business") || lower.includes("commercial")) return "business";
-  if (lower.includes("trade")) return "trade";
-  if (lower.includes("green") || lower.includes("garden")) return "green_waste";
+  // match the button words users will type
+  if (lower === "household" || lower.includes("household")) return "household";
+  if (lower === "business" || lower.includes("business") || lower.includes("commercial"))
+    return "business";
+  if (lower === "trade" || lower.includes("trade")) return "trade";
   if (
-    lower.includes("bulky") ||
+    lower === "green waste" ||
+    lower.includes("green waste") ||
+    lower.includes("green") ||
+    lower.includes("garden")
+  )
+    return "green_waste";
+  if (
     lower.includes("single bulky") ||
+    lower.includes("bulky") ||
     lower.includes("single item")
   )
     return "single_bulky_items";
+
   return "unknown";
 }
 
@@ -131,40 +116,90 @@ const EXTRAS_KEYWORDS = [
   "arm chairs",
 ];
 
-function looksLikeExtrasAnswer(lower) {
+function isExtrasAnswer(lower) {
   if (
-    lower === "no" ||
     lower === "none" ||
+    lower === "no" ||
     lower.includes("no extras") ||
     lower.includes("nothing extra")
-  ) return true;
+  )
+    return true;
 
   if (EXTRAS_KEYWORDS.some((k) => lower.includes(k))) return true;
 
-  // IMPORTANT: we DO NOT treat "any number" as extras (that broke the flow)
   return false;
 }
 
 export default async function handler(req, res) {
-  setCors(req, res);
+  try {
+    setCors(req, res);
 
-  if (req.method === "OPTIONS") return res.status(204).end();
+    if (req.method === "OPTIONS") return res.status(204).end();
 
-  if (req.method !== "POST") {
-    return reply(res, "Method not allowed", { ok: false });
+    // IMPORTANT: Always return JSON (never throw)
+    if (req.method !== "POST") {
+      return reply(res, "Method not allowed", { ok: false });
+    }
+
+    const body = req.body || {};
+    const message = (extractMessage(body) || "").trim();
+    const lower = message.toLowerCase();
+
+    // Debug (helps in Vercel logs)
+    console.log("Incoming /chat body:", body);
+    console.log("Parsed message:", message);
+
+    if (!message) {
+      return reply(res, "No problem — what’s your postcode?");
+    }
+
+    // 1) Postcode -> ask waste type
+    const pc = findPostcodeInText(message);
+    if (pc) {
+      const local = isLocalPostcode(pc); // internal only
+      return reply(
+        res,
+        "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
+        { postcode: pc, local_area: local, next_step: "waste_type" }
+      );
+    }
+
+    // 2) Waste type -> ask extras
+    const wasteType = detectWasteType(lower);
+    if (wasteType !== "unknown") {
+      return reply(
+        res,
+        "Thanks! Are there any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nPlease tell me how many of each (or say “none”).",
+        { waste_type: wasteType, next_step: "extras" }
+      );
+    }
+
+    // 3) Extras answer -> ask photos
+    if (isExtrasAnswer(lower)) {
+      return reply(
+        res,
+        "Thanks! Please upload 1–3 photos of the rubbish (or type a short description) and we’ll estimate it.",
+        { next_step: "photos" }
+      );
+    }
+
+    // 4) Price/quote -> ask postcode
+    const wantsPrice =
+      lower.includes("how much") ||
+      lower.includes("price") ||
+      lower.includes("quote") ||
+      lower.includes("cost") ||
+      lower.includes("charge");
+
+    if (wantsPrice) {
+      return reply(res, "No problem — what’s your postcode?");
+    }
+
+    // Default
+    return reply(res, "If you want a quote, tell me your postcode.");
+  } catch (err) {
+    console.error("CHAT ERROR:", err);
+    // Never break the widget
+    return reply(res, "Sorry — please try again.", { ok: false });
   }
-
-  const body = req.body || {};
-  const message = (extractMessage(body) || "").trim();
-  const lower = message.toLowerCase();
-
-  const messages = getMessagesArray(body);
-  const lastBot = (lastAssistantText(messages) || "").toLowerCase();
-
-  const botAskedWasteType =
-    lastBot.includes("what type of rubbish") ||
-    lastBot.includes("household / business") ||
-    lastBot.includes("single bulky");
-
-  const botAskedExtras =
-    lastBot.includes("any extr
+}
