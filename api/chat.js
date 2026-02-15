@@ -207,3 +207,7 @@ export default async function handler(req, res) {
       "You can book instantly using the pink button above. If you want a quick estimate first, tell me your postcode."
     );
   }
+
+  // Default
+  return reply(res, "Hi! If you want a quote, tell me your postcode.");
+}
