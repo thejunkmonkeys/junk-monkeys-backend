@@ -5,6 +5,7 @@ function setCors(req, res) {
   ]);
 
   const origin = req.headers.origin;
+
   if (origin && allowed.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
@@ -18,14 +19,34 @@ function setCors(req, res) {
 export default async function handler(req, res) {
   setCors(req, res);
 
-  const { message } = req.body || {};
-if (!message) return res.status(400).json({ error: "No message provided" });
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  const { message } = req.body || {};
-  if (!message) return res.status(400).json({ error: "No message provided" });
+  const body = req.body || {};
+  console.log("Incoming body:", body);
 
-  return res.status(200).json({ reply: `Backend live. You said: ${message}` });
-}
+  const message =
+    body.message ??
+    body.text ??
+    body.input ??
+    body.prompt ??
+    body.query ??
+    body.messages?.slice(-1)?.[0]?.content;
 
+  if (!message) {
+    return res.status(400).json({
+      error: "No message provided",
+      received: body
+    });
+  }
+
+  // Temporary response
+  return res.status(200).json({
+    reply:
 
