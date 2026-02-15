@@ -18,12 +18,14 @@ function setCors(req, res) {
 export default async function handler(req, res) {
   setCors(req, res);
 
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  const { message } = req.body || {};
+if (!message) return res.status(400).json({ error: "No message provided" });
+
 
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: "No message provided" });
 
   return res.status(200).json({ reply: `Backend live. You said: ${message}` });
 }
+
 
