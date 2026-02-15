@@ -5,6 +5,7 @@ function setCors(req, res) {
   ]);
 
   const origin = req.headers.origin;
+
   if (origin && allowed.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
@@ -15,14 +16,14 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
-// Try hard to extract a user message from lots of possible shapes
+// Extract message from different possible payload shapes
 function extractMessage(body) {
   if (!body) return null;
 
-  // If body is already a string
-  if (typeof body === "string") return body.trim() || null;
+  if (typeof body === "string") {
+    return body.trim() || null;
+  }
 
-  // Common top-level fields
   const direct =
     body.message ??
     body.text ??
@@ -31,19 +32,20 @@ function extractMessage(body) {
     body.query ??
     body.question ??
     body.content;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
 
-  // Common chat history formats: { messages: [{content:""}] }
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+
   const msgs = body.messages ?? body.chat ?? body.history ?? body.conversation;
   if (Array.isArray(msgs) && msgs.length) {
     const last = msgs[msgs.length - 1];
     if (typeof last === "string") return last.trim() || null;
-    if (last && typeof last.content === "string") return last.content.trim() || null;
-    if (last && typeof last.text === "string") return last.text.trim() || null;
-    if (last && typeof last.message === "string") return last.message.trim() || null;
+    if (last?.content) return last.content.trim();
+    if (last?.text) return last.text.trim();
+    if (last?.message) return last.message.trim();
   }
 
-  // Sometimes nested: { data: {...} }
   if (body.data && typeof body.data === "object") {
     return extractMessage(body.data);
   }
@@ -54,8 +56,10 @@ function extractMessage(body) {
 export default async function handler(req, res) {
   setCors(req, res);
 
-  // Preflight
-  if (req.method === "OPTIONS") return res.status(204).end();
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
   if (req.method !== "POST") {
     return res.status(200).json({
@@ -71,20 +75,37 @@ export default async function handler(req, res) {
 
   const message = extractMessage(body);
 
-  // IMPORTANT: Return 200 even if message missing (so plugin doesn’t treat it as “failed fetch”)
   if (!message) {
     return res.status(200).json({
       ok: false,
-      reply: "I didn’t receive a message from the website. Please try again.",
-      text: "I didn’t receive a message from the website. Please try again.",
-      message: "I didn’t receive a message from the website. Please try again.",
-      receivedKeys: Object.keys(body || {}),
+      reply: "I didn’t receive a message. Please try again.",
+      text: "I didn’t receive a message. Please try again.",
+      message: "I didn’t receive a message. Please try again.",
     });
   }
 
-  const replyText = `Backend live. You said: ${message}`;
+  // 🔥 SMART RESPONSE SECTION
+  let replyText;
 
-  // Return multiple keys so the plugin can pick what it expects
+  const lower = message.toLowerCase();
+
+  if (lower.includes("how much") || lower.includes("price")) {
+    replyText =
+      "Prices depend on load size. You can send photos or click 'Get A Quote Or Book Now' above.";
+  }
+  else if (lower.includes("book")) {
+    replyText =
+      "You can book instantly using the pink button above. Would you like help choosing a service?";
+  }
+  else if (lower.includes("garden")) {
+    replyText =
+      "We offer garden waste clearance. Is it bags, loose waste, or large items?";
+  }
+  else {
+    replyText =
+      "Thanks for your message. A team member will assist you shortly.";
+  }
+
   return res.status(200).json({
     ok: true,
     reply: replyText,
@@ -92,3 +113,4 @@ export default async function handler(req, res) {
     message: replyText,
   });
 }
+
