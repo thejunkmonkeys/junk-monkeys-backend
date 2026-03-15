@@ -69,6 +69,16 @@ function reply(res, text, extra = {}) {
   });
 }
 
+function fail(res, text, extra = {}, status = 200) {
+  return res.status(status).json({
+    ok: false,
+    reply: text,
+    text,
+    message: text,
+    ...extra,
+  });
+}
+
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -90,7 +100,7 @@ function outwardCode(pcNoSpace) {
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
-  const localLS = new Set(["LS10","LS11","LS9","LS8","LS7","LS26","LS27","LS28"]);
+  const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
   return localLS.has(outward);
 }
 
@@ -104,7 +114,20 @@ function detectWasteType(lower) {
 }
 
 const EXTRAS_KEYWORDS = [
-  "mattress","fridge","freezer","tyre","paint","sofa","armchair"
+  "mattress",
+  "fridge",
+  "freezer",
+  "tyre",
+  "paint",
+  "sofa",
+  "armchair",
+  "arm chair",
+  "car tyre",
+  "car tires",
+  "fridges",
+  "freezers",
+  "mattresses",
+  "sofas",
 ];
 
 function looksLikeExtrasAnswer(lower) {
@@ -122,7 +145,13 @@ function looksLikeExtrasAnswer(lower) {
 
 function isGreeting(lower) {
   return [
-    "hi","hello","hey","hiya","good morning","good afternoon","good evening"
+    "hi",
+    "hello",
+    "hey",
+    "hiya",
+    "good morning",
+    "good afternoon",
+    "good evening",
   ].includes(lower.trim());
 }
 
@@ -196,13 +225,178 @@ function getFaqReply(lower) {
   return null;
 }
 
+function getImageUrls(body) {
+  const urls =
+    body?.uploaded_image_urls ??
+    body?.image_urls ??
+    body?.images ??
+    body?.photos ??
+    [];
+
+  if (!Array.isArray(urls)) return [];
+  return urls.filter((u) => typeof u === "string" && u.trim());
+}
+
+function hasOpenAiKey() {
+  return Boolean(process.env.OPENAI_API_KEY);
+}
+
+function getLoadLabel(estimatedYards) {
+  if (estimatedYards <= 2) return "a small load";
+  if (estimatedYards <= 4) return "roughly a quarter load";
+  if (estimatedYards <= 8) return "around a half load";
+  if (estimatedYards <= 12) return "around three quarters of a load";
+  return "close to a full load";
+}
+
+function buildVisionPrompt(context) {
+  const postcode = context?.postcode || "unknown";
+  const wasteType = context?.wasteType || "unknown";
+  const extras = context?.extras || "unknown";
+
+  return [
+    "You are estimating UK rubbish removal volume from customer photos for The Junk Monkeys.",
+    "Be practical and conservative.",
+    "Return ONLY valid JSON.",
+    "Estimate the visible rubbish volume in cubic yards.",
+    "Use a realistic range when uncertain.",
+    "If the image is unclear, still provide your best estimate and mention uncertainty in the notes.",
+    "Context:",
+    `- postcode: ${postcode}`,
+    `- waste_type: ${wasteType}`,
+    `- extras: ${extras}`,
+    "Required JSON shape:",
+    '{',
+    '  "estimated_yards_min": number,',
+    '  "estimated_yards_max": number,',
+    '  "load_label": string,',
+    '  "summary": string,',
+    '  "notes": string',
+    '}',
+  ].join("\n");
+}
+
+function extractConversationContext(messages) {
+  let postcode = null;
+  let wasteType = null;
+  let extras = [];
+
+  for (const m of messages) {
+    const role = (m?.role || "").toLowerCase();
+    const content = (m?.content ?? m?.text ?? m?.message ?? "").toString();
+    if (role !== "user" || !content) continue;
+
+    const pc = findPostcodeInText(content);
+    if (pc) postcode = pc;
+
+    const wt = detectWasteType(content.toLowerCase());
+    if (wt !== "unknown") wasteType = wt;
+
+    for (const keyword of EXTRAS_KEYWORDS) {
+      if (content.toLowerCase().includes(keyword)) {
+        extras.push(keyword);
+      }
+    }
+  }
+
+  return {
+    postcode,
+    wasteType,
+    extras: extras.length ? [...new Set(extras)].join(", ") : "none",
+  };
+}
+
+async function estimateFromImages(imageUrls, context) {
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  const content = [
+    { type: "text", text: buildVisionPrompt(context) },
+    ...imageUrls.map((url) => ({
+      type: "image_url",
+      image_url: { url },
+    })),
+  ];
+
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "user",
+          content,
+        },
+      ],
+      max_tokens: 300,
+    }),
+  });
+
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    throw new Error(data?.error?.message || "OpenAI request failed");
+  }
+
+  const raw = data?.choices?.[0]?.message?.content || "{}";
+  const parsed = JSON.parse(raw);
+
+  const min = Number(parsed.estimated_yards_min) || 0;
+  const max = Number(parsed.estimated_yards_max) || min || 0;
+  const midpoint = (min + max) / 2;
+  const loadLabel = parsed.load_label || getLoadLabel(midpoint || max || 0);
+  const summary = parsed.summary || "Estimated from the uploaded photo(s).";
+  const notes = parsed.notes || "";
+
+  return {
+    min,
+    max,
+    loadLabel,
+    summary,
+    notes,
+  };
+}
+
+function buildEstimateReply(estimate) {
+  const rangeText =
+    estimate.min && estimate.max && estimate.min !== estimate.max
+      ? `${estimate.min}–${estimate.max}`
+      : `${estimate.max || estimate.min}`;
+
+  let text = `Estimated volume: ${rangeText} cubic yards.\nThat is ${estimate.loadLabel}.`;
+
+  if (estimate.summary) {
+    text += `\n\n${estimate.summary}`;
+  }
+
+  if (estimate.notes) {
+    text += `\n\nNotes: ${estimate.notes}`;
+  }
+
+  text += "\n\nIf you'd like, send one more photo from another angle for a tighter estimate, or use the pink button above to book online.";
+
+  return text;
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
 
   if (req.method === "OPTIONS") return res.status(204).end();
 
   if (req.method !== "POST") {
-    return reply(res, "Method not allowed", { ok: false });
+    return fail(res, "Method not allowed", { error: "Method not allowed" }, 405);
+  }
+
+  const token = req.headers["x-tjm-token"];
+  const expected = process.env.BACKEND_TOKEN;
+
+  if (!token || !expected || token !== expected) {
+    return fail(res, "Unauthorized", { error: "Invalid backend token" }, 401);
   }
 
   const body = req.body || {};
@@ -211,15 +405,43 @@ export default async function handler(req, res) {
 
   const messages = getMessagesArray(body);
   const lastBot = (lastAssistantText(messages) || "").toLowerCase();
+  const imageUrls = getImageUrls(body);
 
-  const botAskedWasteType =
-    lastBot.includes("what type of rubbish");
+  const botAskedWasteType = lastBot.includes("what type of rubbish");
 
   const botAskedExtras =
     lastBot.includes("any extras") ||
     lastBot.includes("mattress") ||
     lastBot.includes("fridge") ||
     lastBot.includes("sofa");
+
+  // NEW: if uploaded photos exist, estimate them before falling back
+  if (imageUrls.length > 0) {
+    try {
+      if (!hasOpenAiKey()) {
+        return reply(
+          res,
+          "Thanks — we received the photo(s). Please call us on 07841 669084 and we’ll help with the estimate."
+        );
+      }
+
+      const context = extractConversationContext(messages);
+      const estimate = await estimateFromImages(imageUrls, context);
+      const text = buildEstimateReply(estimate);
+
+      return reply(res, text, {
+        next_step: "estimate_complete",
+        uploaded_image_urls: imageUrls,
+        estimate,
+      });
+    } catch (err) {
+      console.error("CHAT IMAGE ESTIMATE ERROR:", err);
+      return reply(
+        res,
+        "Thanks — we received the photo(s), but I couldn’t estimate them automatically just now. Please send one more photo from another angle or call us on 07841 669084."
+      );
+    }
+  }
 
   if (!message || isGreeting(lower)) {
     return reply(res, "Hi 👋 How can I help you today?");
