@@ -88,27 +88,38 @@ export default async function handler(req, res) {
 
     const { fields, files } = await parseForm(req);
 
-    const jobId = getSingleFieldValue(fields.jobId || fields.job_id);
+    let jobId = getSingleFieldValue(fields.jobId || fields.job_id);
 
+    // If frontend did not send a job id, create one automatically
     if (!jobId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing jobId",
-      });
-    }
+      const { data: newJob, error: newJobError } = await supabase
+        .from("jobs")
+        .insert({})
+        .select("id")
+        .single();
 
-    // Optional: confirm the job exists
-    const { data: job, error: jobError } = await supabase
-      .from("jobs")
-      .select("id")
-      .eq("id", jobId)
-      .single();
+      if (newJobError || !newJob?.id) {
+        console.error("JOB CREATE ERROR:", newJobError);
+        return res.status(500).json({
+          ok: false,
+          error: "Could not create job",
+        });
+      }
 
-    if (jobError || !job) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid jobId",
-      });
+      jobId = newJob.id;
+    } else {
+      const { data: job, error: jobError } = await supabase
+        .from("jobs")
+        .select("id")
+        .eq("id", jobId)
+        .single();
+
+      if (jobError || !job) {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid jobId",
+        });
+      }
     }
 
     let incoming =
@@ -143,9 +154,7 @@ export default async function handler(req, res) {
         "." +
         safeExt;
 
-      // Store by jobId, not in one shared uploads folder
       const storagePath = `${jobId}/${filename}`;
-
       const buffer = fs.readFileSync(filepath);
 
       const { error: uploadError } = await supabase.storage
@@ -174,7 +183,6 @@ export default async function handler(req, res) {
 
       if (dbError) {
         console.error("JOB_PHOTOS INSERT ERROR:", dbError);
-
         return res.status(500).json({
           ok: false,
           error: dbError.message,
