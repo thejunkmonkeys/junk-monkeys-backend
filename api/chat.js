@@ -309,6 +309,45 @@ async function saveEstimateToJob(body, estimate) {
   }
 }
 
+async function findSimilarJobs(estimate, body) {
+  try {
+    const baseUrl =
+      process.env.BASE_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      "https://www.thejunkmonkeys.co.uk";
+
+    const wasteType =
+      body?.waste_type ||
+      body?.wasteType ||
+      detectWasteType((extractMessage(body) || "").toLowerCase());
+
+    const resp = await fetch(`${baseUrl}/api/find-similar-jobs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-TJM-Token": process.env.BACKEND_TOKEN,
+      },
+      body: JSON.stringify({
+        estimated_yards: estimate.estimated_yards,
+        waste_type: wasteType !== "unknown" ? wasteType : null,
+        extras: body?.extras || null,
+      }),
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      console.error("FIND SIMILAR JOBS RESPONSE ERROR:", data);
+      return [];
+    }
+
+    return Array.isArray(data?.matches) ? data.matches : [];
+  } catch (err) {
+    console.error("SIMILAR JOB SEARCH FAILED:", err);
+    return [];
+  }
+}
+
 export default async function handler(req, res) {
   try {
     setCors(req, res);
@@ -346,15 +385,20 @@ export default async function handler(req, res) {
 
         await saveEstimateToJob(body, estimate);
 
-        return reply(
-          res,
-          `Estimated volume: ${estimate.estimated_yards} cubic yards.\n\n${estimate.summary}`,
-          {
-            estimate,
-            uploaded_image_urls: imageUrls,
-            next_step: "estimate_complete",
-          }
-        );
+        const similarJobs = await findSimilarJobs(estimate, body);
+
+        let text = `Estimated volume: ${estimate.estimated_yards} cubic yards.\n\n${estimate.summary}`;
+
+        if (similarJobs.length > 0) {
+          text += `\n\nThis looks similar to previous ${similarJobs[0].actual_yards} yard jobs we have completed.`;
+        }
+
+        return reply(res, text, {
+          estimate,
+          similar_jobs: similarJobs,
+          uploaded_image_urls: imageUrls,
+          next_step: "estimate_complete",
+        });
       } catch (err) {
         console.error("CHAT IMAGE ESTIMATE ERROR:", err);
 
