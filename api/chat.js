@@ -88,6 +88,7 @@ function detectWasteType(lower) {
   if (lower.includes("business")) return "business";
   if (lower.includes("trade")) return "trade";
   if (lower.includes("green") || lower.includes("garden")) return "green_waste";
+  if (lower.includes("single")) return "single_items";
   return "unknown";
 }
 
@@ -101,10 +102,6 @@ function getImageUrls(body) {
 
   if (!Array.isArray(urls)) return [];
   return urls.filter((u) => typeof u === "string" && u.trim());
-}
-
-function hasOpenAiKey() {
-  return Boolean(process.env.OPENAI_API_KEY);
 }
 
 function normalizeYardSize(yards) {
@@ -127,7 +124,6 @@ function buildVisionPrompt(context) {
     "Your job is to estimate the total visible waste volume in cubic yards from the uploaded photo or photos.",
     "You must NOT choose pricing, business rules, or service decisions.",
     "Your job is only to estimate visible waste volume.",
-
     "PROCESS",
     "1. Identify the visible waste items in the photo or photos.",
     "2. Estimate the approximate volume of each visible item.",
@@ -135,7 +131,6 @@ function buildVisionPrompt(context) {
     "4. Use that raw estimate as the most likely real visible waste volume.",
     "5. Do NOT add extra volume for rubbish that cannot be seen.",
     "6. Do NOT assume hidden waste exists outside the photos.",
-
     "IMPORTANT RULES",
     "- Estimate ONLY what is visible in the photos.",
     "- Never return a range.",
@@ -143,7 +138,6 @@ function buildVisionPrompt(context) {
     "- Do not add a safety buffer.",
     "- Do not increase the estimate just because extra-charge items are present.",
     "- Customers are told to include all rubbish in the photos, including extras.",
-
     "VOLUME GUIDELINES",
     "- 5 full black bags ≈ 1 cubic yard",
     "- Sofa ≈ 1.5 cubic yards",
@@ -151,7 +145,6 @@ function buildVisionPrompt(context) {
     "- Wardrobe ≈ 2 cubic yards",
     "- Fridge ≈ 1.5 cubic yards",
     "- Washing machine ≈ 1 cubic yard",
-
     "After estimating the raw visible volume, convert it to the company's standard job sizes using these rules:",
     "- 1 returns 1",
     "- 2 returns 2",
@@ -159,7 +152,6 @@ function buildVisionPrompt(context) {
     "- 6 or 7 returns 7",
     "- 8, 9, or 10 returns 10",
     "- 11, 12, 13, or 14 returns 14",
-
     "OUTPUT",
     "Return JSON only in this exact shape:",
     "{",
@@ -169,7 +161,6 @@ function buildVisionPrompt(context) {
     '  "confidence": "high | medium | low",',
     '  "reason": "short explanation of the estimate"',
     "}",
-
     "Context:",
     `- postcode: ${postcode}`,
     `- waste_type: ${wasteType}`,
@@ -204,7 +195,6 @@ async function estimateFromImages(imageUrls, context) {
   });
 
   const data = await resp.json();
-
   const raw = data?.choices?.[0]?.message?.content || "{}";
   const parsed = JSON.parse(raw);
 
@@ -228,18 +218,93 @@ export default async function handler(req, res) {
   setCors(req, res);
 
   if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
 
   const body = req.body || {};
   const messages = getMessagesArray(body);
+  const lastBot = lastAssistantText(messages).toLowerCase();
   const imageUrls = getImageUrls(body);
+
+  const message = extractMessage(body);
+  const lower = (message || "").toLowerCase();
+  const postcode = findPostcodeInText(message);
 
   if (imageUrls.length > 0) {
     const context = {};
     const estimate = await estimateFromImages(imageUrls, context);
     const text = buildEstimateReply(estimate);
-
     return reply(res, text, { estimate });
   }
 
-  return reply(res, "Please upload a photo of the waste so I can estimate the volume.");
+  if (!message) {
+    return reply(res, "Hi 👋 How can I help you?");
+  }
+
+  if (lower === "hi" || lower === "hello" || lower.includes("hey")) {
+    return reply(res, "Hi 👋 How can I help you?");
+  }
+
+  if (
+    lower.includes("hours") ||
+    lower.includes("open") ||
+    lower.includes("opening") ||
+    lower.includes("what time") ||
+    lower.includes("when are you open")
+  ) {
+    return reply(res, "We work from 7:30 to 5.");
+  }
+
+  if (
+    lower.includes("how much") ||
+    lower.includes("price") ||
+    lower.includes("cost") ||
+    lower.includes("quote") ||
+    lower.includes("charge")
+  ) {
+    return reply(
+      res,
+      "Please enter your postcode."
+    );
+  }
+
+  if (lastBot.includes("please enter your postcode")) {
+    if (!postcode) {
+      return reply(res, "Please enter a valid postcode.");
+    }
+
+    return reply(
+      res,
+      "What type of waste is it: household, business, trade, green waste, or single items?"
+    );
+  }
+
+  if (lastBot.includes("what type of waste is it")) {
+    const wasteType = detectWasteType(lower);
+
+    if (wasteType === "unknown") {
+      return reply(
+        res,
+        "Please tell me if it is household, business, trade, green waste, or single items."
+      );
+    }
+
+    return reply(
+      res,
+      "Any extras? For example mattresses, sofas, arm chairs, fridges, freezers, or tins of paint."
+    );
+  }
+
+  if (lastBot.includes("any extras")) {
+    return reply(
+      res,
+      "Please upload photos of the waste so I can estimate the volume."
+    );
+  }
+
+  return reply(
+    res,
+    "I’m not sure about that. Please WhatsApp us on 07841669084 and we’ll help you."
+  );
 }
