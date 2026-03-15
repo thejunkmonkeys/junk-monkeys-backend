@@ -40,8 +40,6 @@ function extractMessage(body) {
     if (typeof last?.message === "string") return last.message.trim() || null;
   }
 
-  if (body.data && typeof body.data === "object") return extractMessage(body.data);
-
   return null;
 }
 
@@ -85,7 +83,6 @@ function findPostcodeInText(text) {
   return m ? normalizePostcode(m[0]) : null;
 }
 
-// Keep this internal for later (don’t show customer)
 function outwardCode(pcNoSpace) {
   return pcNoSpace.slice(0, -3);
 }
@@ -93,44 +90,22 @@ function outwardCode(pcNoSpace) {
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
-  const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
+  const localLS = new Set(["LS10","LS11","LS9","LS8","LS7","LS26","LS27","LS28"]);
   return localLS.has(outward);
 }
 
-// --- Flow helpers ---
+// --- Waste type detection ---
 function detectWasteType(lower) {
   if (lower.includes("house")) return "household";
   if (lower.includes("business") || lower.includes("commercial")) return "business";
   if (lower.includes("trade")) return "trade";
   if (lower.includes("green") || lower.includes("garden")) return "green_waste";
-  if (
-    lower.includes("bulky") ||
-    lower.includes("single bulky") ||
-    lower.includes("single item")
-  ) {
-    return "single_bulky_items";
-  }
+  if (lower.includes("bulky") || lower.includes("single item")) return "single_bulky_items";
   return "unknown";
 }
 
 const EXTRAS_KEYWORDS = [
-  "mattress",
-  "mattresses",
-  "fridge",
-  "fridges",
-  "freezer",
-  "freezers",
-  "tyre",
-  "tyres",
-  "tire",
-  "tires",
-  "paint",
-  "tin of paint",
-  "sofa",
-  "sofas",
-  "armchair",
-  "arm chair",
-  "arm chairs",
+  "mattress","fridge","freezer","tyre","paint","sofa","armchair"
 ];
 
 function looksLikeExtrasAnswer(lower) {
@@ -139,64 +114,48 @@ function looksLikeExtrasAnswer(lower) {
     lower === "none" ||
     lower.includes("no extras") ||
     lower.includes("nothing extra")
-  ) {
-    return true;
-  }
+  ) return true;
 
   if (EXTRAS_KEYWORDS.some((k) => lower.includes(k))) return true;
 
   return false;
 }
 
+// --- Greeting ---
 function isGreeting(lower) {
   return [
-    "hi",
-    "hello",
-    "hey",
-    "hiya",
-    "good morning",
-    "good afternoon",
-    "good evening",
+    "hi","hello","hey","hiya","good morning","good afternoon","good evening"
   ].includes(lower.trim());
 }
 
+// --- FAQ replies ---
 function getFaqReply(lower) {
-  if (
-    lower.includes("sofa") ||
-    lower.includes("sofas") ||
-    lower.includes("mattress") ||
-    lower.includes("fridge") ||
-    lower.includes("freezer") ||
-    lower.includes("garden waste") ||
-    lower.includes("green waste") ||
-    lower.includes("house clearance") ||
-    lower.includes("commercial waste")
-  ) {
-    return "Yes, we can usually help with that. If you'd like, I can give you a quick quote.";
+
+  if (lower.includes("time") || lower.includes("open")) {
+    return "We usually operate Monday to Friday, 7am – 5pm. If you'd like a quote, just send me your postcode.";
   }
 
-  if (
-    lower.includes("area") ||
-    lower.includes("areas") ||
-    lower.includes("cover") ||
-    lower.includes("postcode")
-  ) {
-    return "Send me your postcode and I’ll point you in the right direction for a quote.";
+  if (lower.includes("same day") || lower.includes("today")) {
+    return "We may be able to offer same-day collection depending on availability. Send me your postcode and I can help with a quote.";
   }
 
-  if (
-    lower.includes("same day") ||
-    lower.includes("today") ||
-    lower.includes("urgent")
-  ) {
-    return "We may be able to help, depending on availability. If you'd like a quick quote, send me your postcode.";
+  if (lower.includes("sofa")) {
+    return "Yes, we can usually collect sofas. If you'd like, I can give you a quick quote.";
   }
 
-  if (
-    lower.includes("book online") ||
-    lower.includes("booking") ||
-    lower.includes("book a collection")
-  ) {
+  if (lower.includes("mattress")) {
+    return "Yes, we can usually collect mattresses. If you'd like, I can give you a quick quote.";
+  }
+
+  if (lower.includes("fridge") || lower.includes("freezer")) {
+    return "Yes, we can usually collect fridges and freezers. If you'd like, I can give you a quick quote.";
+  }
+
+  if (lower.includes("garden waste") || lower.includes("green waste")) {
+    return "Yes, we can usually collect garden waste. If you'd like, I can give you a quick quote.";
+  }
+
+  if (lower.includes("book")) {
     return "You can book online using the pink button above. If you'd like a quick quote first, just send me your postcode.";
   }
 
@@ -204,6 +163,7 @@ function getFaqReply(lower) {
 }
 
 export default async function handler(req, res) {
+
   setCors(req, res);
 
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -220,48 +180,42 @@ export default async function handler(req, res) {
   const lastBot = (lastAssistantText(messages) || "").toLowerCase();
 
   const botAskedWasteType =
-    lastBot.includes("what type of rubbish") ||
-    lastBot.includes("household / business") ||
-    lastBot.includes("single bulky");
+    lastBot.includes("what type of rubbish");
 
   const botAskedExtras =
     lastBot.includes("any extras") ||
     lastBot.includes("mattress") ||
     lastBot.includes("fridge") ||
-    lastBot.includes("freezer") ||
-    lastBot.includes("car tyres") ||
-    lastBot.includes("tin of paint") ||
-    lastBot.includes("sofas") ||
-    lastBot.includes("arm chairs");
+    lastBot.includes("sofa");
 
-  // 1) Greeting / first message
+  // Greeting
   if (!message || isGreeting(lower)) {
     return reply(res, "Hi 👋 How can I help you today?");
   }
 
-  // 2) If user includes postcode -> ask waste type
+  // Postcode
   const foundPc = findPostcodeInText(message);
   if (foundPc) {
-    const local = isLocalPostcode(foundPc); // internal only
+    const local = isLocalPostcode(foundPc);
     return reply(
       res,
-      "Thanks. What type of rubbish do you have?\nHousehold / Business / Trade / Green waste / Single bulky items",
+      "Thanks! What type of rubbish do you have?\nHousehold / Business / Trade / Green waste / Single bulky items",
       { postcode: foundPc, local_area: local, next_step: "waste_type" }
     );
   }
 
-  // 3) If bot asked waste type, and user answers with one -> ask extras
+  // Waste type
   const wasteType = detectWasteType(lower);
 
   if ((botAskedWasteType && wasteType !== "unknown") || wasteType !== "unknown") {
     return reply(
       res,
-      "Thanks. Do you have any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nPlease tell me how many of each, or say none.",
+      "Thanks! Are there any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nTell me how many of each (or say none).",
       { waste_type: wasteType, next_step: "extras" }
     );
   }
 
-  // 4) If bot asked extras, and user replies with extras/none -> ask for photos
+  // Extras → photos
   if (botAskedExtras && looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
@@ -270,7 +224,6 @@ export default async function handler(req, res) {
     );
   }
 
-  // Also allow extras answers even if history missing
   if (looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
@@ -279,36 +232,28 @@ export default async function handler(req, res) {
     );
   }
 
-  // 5) Quote intent -> ask postcode
+  // Quote intent
   const wantsPriceOrQuote =
     lower.includes("how much") ||
     lower.includes("price") ||
     lower.includes("quote") ||
     lower.includes("cost") ||
-    lower.includes("charge") ||
-    lower.includes("estimate");
+    lower.includes("charge");
 
   if (wantsPriceOrQuote) {
     return reply(res, "Sure 👍 What’s the postcode for the collection?");
   }
 
-  // 6) Booking intent
-  if (lower.includes("book")) {
-    return reply(
-      res,
-      "No problem — would you like a quick quote first, or are you ready to book?"
-    );
-  }
-
-  // 7) Basic FAQ handling
+  // FAQ
   const faqReply = getFaqReply(lower);
   if (faqReply) {
     return reply(res, faqReply);
   }
 
-  // 8) Default fallback
+  // FINAL FALLBACK
   return reply(
     res,
-    "Hi 👋 How can I help you today? You can ask a question or request a quote."
+    "Sorry, I can't answer that at the moment. Please call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm."
   );
+
 }
