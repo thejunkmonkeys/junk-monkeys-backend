@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "formidable": "^3.5.4"
+    "formidable": "^3.5.4",
+    "openai": "^5.12.2"
   }
 }

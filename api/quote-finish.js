@@ -1,61 +1,73 @@
-import { supabase } from '../lib/supabase.js';
-import { requireAuth } from '../lib/auth.js';
+import { calculateQuote, parseExtras } from "../lib/pricing.js";
 
-function calculateLoads(estimatedYards) {
-  const bands = [1, 2, 4, 7, 10, 14];
-  let remaining = Math.ceil(estimatedYards);
-  const loads = [];
+function setCors(req, res) {
+  const allowed = new Set([
+    "https://thejunkmonkeys.co.uk",
+    "https://www.thejunkmonkeys.co.uk",
+  ]);
 
-  while (remaining > 0) {
-    const band =
-      bands.slice().reverse().find(b => b <= remaining) || 1;
-    loads.push(band);
-    remaining -= band;
+  const origin = req.headers.origin;
+  if (origin && allowed.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
-  return loads;
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-TJM-Token");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
+function formatExtras(extras = []) {
+  if (!extras.length) return "No extras";
+
+  return extras.map((item) => `${item.qty} x ${item.name}`).join(", ");
 }
 
 export default async function handler(req, res) {
+  setCors(req, res);
+
+  if (req.method === "OPTIONS") return res.status(204).end();
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
   try {
-    requireAuth(req);
+    const { postcode, estimated_yards, extras } = req.body || {};
 
-    const {
-      job_id,
-      estimated_yards,
-      fixed_price_total,
-      photo_paths
-    } = req.body || {};
-
-    if (!job_id || !estimated_yards || !fixed_price_total) {
-      throw new Error('Missing required data');
+    if (!postcode) {
+      return res.status(400).json({ ok: false, error: "Missing postcode" });
     }
 
-    const loads = calculateLoads(estimated_yards);
+    if (!estimated_yards) {
+      return res.status(400).json({ ok: false, error: "Missing estimated_yards" });
+    }
 
-    const { error } = await supabase
-      .from('jobs')
-      .update({
-        estimated_yards,
-        recommended_loads: {
-          loads,
-          total_yards: loads.reduce((a, b) => a + b, 0)
-        },
-        fixed_price_total,
-        photo_paths,
-        status: 'quoted'
-      })
-      .eq('id', job_id);
+    const parsedExtras = Array.isArray(extras) ? extras : parseExtras(extras);
 
-    if (error) throw error;
-
-    res.status(200).json({
-      loads_to_book: loads,
-      fixed_price_total,
-      disclaimer:
-        'Final price subject to on-site verification if waste differs from photos provided.'
+    const quote = calculateQuote({
+      postcode,
+      yards: Number(estimated_yards),
+      extras: parsedExtras,
     });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+
+    const reply =
+      `Based on the photos, this looks closest to a ${quote.yards} yard collection.\n\n` +
+      `Base price: £${quote.base_price}\n` +
+      `Extras: £${quote.extras_total} (${formatExtras(parsedExtras)})\n` +
+      `Estimated total: £${quote.total}\n\n` +
+      `Final price is confirmed on arrival once the load is assessed on site.`;
+
+    return res.status(200).json({
+      ok: true,
+      reply,
+      ...quote,
+      extras: parsedExtras,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Quote calculation failed",
+    });
   }
 }
