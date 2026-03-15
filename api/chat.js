@@ -21,6 +21,7 @@ function extractMessage(body) {
   if (typeof body === "string") return body.trim() || null;
 
   const direct =
+    body.user_message ??
     body.message ??
     body.text ??
     body.input ??
