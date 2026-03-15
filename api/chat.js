@@ -68,7 +68,6 @@ function reply(res, text, extra = {}) {
   });
 }
 
-// --- Postcode helpers ---
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -94,7 +93,6 @@ function isLocalPostcode(pcNoSpace) {
   return localLS.has(outward);
 }
 
-// --- Waste type detection ---
 function detectWasteType(lower) {
   if (lower.includes("house")) return "household";
   if (lower.includes("business") || lower.includes("commercial")) return "business";
@@ -121,24 +119,42 @@ function looksLikeExtrasAnswer(lower) {
   return false;
 }
 
-// --- Greeting ---
 function isGreeting(lower) {
   return [
     "hi","hello","hey","hiya","good morning","good afternoon","good evening"
   ].includes(lower.trim());
 }
 
-// --- FAQ replies ---
 function getFaqReply(lower) {
 
-  if (lower.includes("time") || lower.includes("open")) {
+  // Areas covered
+  if (
+    lower.includes("what areas") ||
+    lower.includes("which areas") ||
+    lower.includes("areas do you cover") ||
+    lower.includes("do you cover") ||
+    lower.includes("coverage") ||
+    lower.includes("locations")
+  ) {
+    return "We cover most locations across the country. Send me your postcode and I’ll point you in the right direction for a quote.";
+  }
+
+  // Opening hours
+  if (lower.includes("time") || lower.includes("open") || lower.includes("hours")) {
     return "We usually operate Monday to Friday, 7am – 5pm. If you'd like a quote, just send me your postcode.";
   }
 
+  // Same day
   if (lower.includes("same day") || lower.includes("today")) {
     return "We may be able to offer same-day collection depending on availability. Send me your postcode and I can help with a quote.";
   }
 
+  // Waste types
+  if (lower.includes("what do you take") || lower.includes("what waste")) {
+    return "We usually collect household rubbish, furniture, garden waste, bulky items and some commercial waste. If you'd like a quote, just send your postcode.";
+  }
+
+  // Items
   if (lower.includes("sofa")) {
     return "Yes, we can usually collect sofas. If you'd like, I can give you a quick quote.";
   }
@@ -151,10 +167,11 @@ function getFaqReply(lower) {
     return "Yes, we can usually collect fridges and freezers. If you'd like, I can give you a quick quote.";
   }
 
-  if (lower.includes("garden waste") || lower.includes("green waste")) {
+  if (lower.includes("garden waste")) {
     return "Yes, we can usually collect garden waste. If you'd like, I can give you a quick quote.";
   }
 
+  // Booking
   if (lower.includes("book")) {
     return "You can book online using the pink button above. If you'd like a quick quote first, just send me your postcode.";
   }
@@ -253,7 +270,7 @@ export default async function handler(req, res) {
   // FINAL FALLBACK
   return reply(
     res,
-    "Sorry, I can't answer that at the moment. Please call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm."
+    "Sorry, I can't answer that at the moment. Please send us a meessage on whatsapp or call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm."
   );
 
 }
