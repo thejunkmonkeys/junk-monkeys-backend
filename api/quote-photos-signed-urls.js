@@ -1,41 +1,56 @@
-import crypto from 'crypto';
-import { supabase } from '../lib/supabase.js';
-import { requireAuth } from '../lib/auth.js';
+import { supabase } from "../lib/supabase.js";
+import { requireAuth } from "../lib/auth.js";
 
 export default async function handler(req, res) {
   try {
     requireAuth(req);
 
-    if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
+    if (req.method !== "POST") {
+      return res.status(405).json({ ok: false, error: "Method not allowed" });
     }
 
-    const { job_id, count } = req.body || {};
+    const { jobId, job_id } = req.body || {};
+    const resolvedJobId = jobId || job_id;
 
-    if (!job_id || !Number.isInteger(count) || count < 1 || count > 6) {
-      throw new Error('Invalid request');
+    if (!resolvedJobId) {
+      return res.status(400).json({ ok: false, error: "Missing jobId" });
     }
 
-    const uploads = [];
+    const { data: photos, error: photosError } = await supabase
+      .from("job_photos")
+      .select("id, path, created_at")
+      .eq("job_id", resolvedJobId)
+      .order("created_at", { ascending: true });
 
-    for (let i = 0; i < count; i++) {
-      const path = `${job_id}/${crypto.randomUUID()}.jpg`;
+    if (photosError) throw photosError;
 
+    const signedPhotos = [];
+
+    for (const photo of photos || []) {
       const { data, error } = await supabase.storage
-        .from('chat-uploads')
-        .createSignedUploadUrl(path);
+        .from("chat-uploads")
+        .createSignedUrl(photo.path, 3600);
 
       if (error) throw error;
 
-      uploads.push({
-        path,
-        uploadUrl: data.signedUrl,
-        token: data.token
+      signedPhotos.push({
+        id: photo.id,
+        path: photo.path,
+        created_at: photo.created_at,
+        signedUrl: data.signedUrl,
       });
     }
 
-    return res.status(200).json({ uploads });
+    return res.status(200).json({
+      ok: true,
+      jobId: resolvedJobId,
+      photos: signedPhotos,
+    });
   } catch (err) {
-    return res.status(400).json({ error: err.message });
+    console.error("SIGNED URL ERROR:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Failed to create signed URLs",
+    });
   }
 }
