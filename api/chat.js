@@ -1,3 +1,9 @@
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 function setCors(req, res) {
   const allowed = new Set([
     "https://thejunkmonkeys.co.uk",
@@ -51,7 +57,18 @@ function extractMessage(body) {
     body.question ??
     body.content;
 
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+
+  const msgs = body.messages ?? body.chat ?? body.history ?? body.conversation;
+  if (Array.isArray(msgs) && msgs.length) {
+    const last = msgs[msgs.length - 1];
+    if (typeof last === "string") return last.trim() || null;
+    if (typeof last?.content === "string") return last.content.trim() || null;
+    if (typeof last?.text === "string") return last.text.trim() || null;
+    if (typeof last?.message === "string") return last.message.trim() || null;
+  }
 
   return null;
 }
@@ -60,6 +77,7 @@ function getImageUrls(body) {
   const urls =
     body?.uploaded_image_urls ??
     body?.image_urls ??
+    body?.photo_urls ??
     body?.images ??
     body?.photos ??
     [];
@@ -68,7 +86,35 @@ function getImageUrls(body) {
   return urls.filter((u) => typeof u === "string" && u.trim());
 }
 
+function normalizePostcode(raw) {
+  if (!raw) return null;
+
+  const s = raw.toUpperCase().trim().replace(/\s+/g, "");
+  const m = s.match(/^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/);
+
+  return m ? s : null;
+}
+
+function findPostcodeInText(text) {
+  if (!text) return null;
+
+  const s = text.toUpperCase().replace(/\s+/g, "");
+  const m = s.match(/[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}/);
+
+  return m ? normalizePostcode(m[0]) : null;
+}
+
+function detectWasteType(lower) {
+  if (lower.includes("house")) return "household";
+  if (lower.includes("business") || lower.includes("commercial")) return "business";
+  if (lower.includes("trade")) return "trade";
+  if (lower.includes("green") || lower.includes("garden")) return "green_waste";
+  if (lower.includes("single")) return "single_items";
+  return "unknown";
+}
+
 function isGreeting(lower) {
+  const t = lower.trim();
   return [
     "hi",
     "hello",
@@ -77,34 +123,39 @@ function isGreeting(lower) {
     "good morning",
     "good afternoon",
     "good evening",
-  ].includes(lower.trim());
+  ].includes(t);
 }
 
 function getFaqReply(lower) {
-
-  if (
-    lower.includes("how does it work") ||
-    lower.includes("how do you work") ||
-    lower.includes("how does rubbish removal work")
-  ) {
-    return "You can book a collection through our online booking portal. On the day our team will call to arrange a time. We arrive in an 18 yard truck, load the rubbish, and take it away for responsible disposal.";
-  }
-
   if (
     lower.includes("what areas") ||
+    lower.includes("which areas") ||
     lower.includes("areas do you cover") ||
-    lower.includes("do you cover")
+    lower.includes("what area do you cover") ||
+    lower.includes("do you cover") ||
+    lower.includes("coverage") ||
+    lower.includes("locations")
   ) {
     return "We cover most of the country.";
   }
 
   if (
     lower.includes("hours") ||
-    lower.includes("opening") ||
     lower.includes("open") ||
-    lower.includes("time")
+    lower.includes("opening") ||
+    lower.includes("what time") ||
+    lower.includes("when are you open")
   ) {
     return "We work from 7:30 to 5.";
+  }
+
+  if (
+    lower.includes("how does it work") ||
+    lower.includes("how do you work") ||
+    lower.includes("how does your service work") ||
+    lower.includes("how do your services work")
+  ) {
+    return "You can book a collection through our online booking portal. On the day of collection our team will call to arrange a time. We arrive, load the rubbish, and take it away for responsible disposal.";
   }
 
   if (
@@ -117,9 +168,10 @@ function getFaqReply(lower) {
 
   if (
     lower.includes("what do you take") ||
+    lower.includes("what waste") ||
     lower.includes("what rubbish do you take")
   ) {
-    return "We usually collect household rubbish, furniture, garden waste and bulky items.";
+    return "We usually collect household rubbish, furniture, garden waste, bulky items and some commercial waste.";
   }
 
   if (lower.includes("book")) {
@@ -129,168 +181,217 @@ function getFaqReply(lower) {
   return null;
 }
 
-function normalizePostcode(raw) {
-  if (!raw) return null;
-
-  const s = raw.toUpperCase().trim().replace(/\s+/g, "");
-
-  const m = s.match(/^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/);
-
-  return m ? s : null;
-}
-
-function findPostcodeInText(text) {
-  if (!text) return null;
-
-  const s = text.toUpperCase().replace(/\s+/g, "");
-
-  const m = s.match(/[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}/);
-
-  return m ? normalizePostcode(m[0]) : null;
-}
-
-function hasOpenAiKey() {
-  return Boolean(process.env.OPENAI_API_KEY);
-}
-
 async function estimateFromImages(imageUrls) {
-
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o",
-      temperature: 0.1,
-      messages: [
+  const input = [
+    {
+      role: "user",
+      content: [
         {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text:
-                "Estimate the rubbish volume in cubic yards from these photos. Return JSON: { estimated_yards: number }",
+          type: "input_text",
+          text:
+            "You are estimating rubbish volume for a UK junk removal company. " +
+            "The customer may upload multiple photos. Some photos may show the same rubbish from different angles. " +
+            "Do not double count the same pile. Only add volumes together if the photos clearly show separate piles or separate waste groups. " +
+            "Return the closest yard bucket only from: 2, 4, 6, 8, 10, 12, 14, 16, 18. " +
+            "Estimate volume only. Do not price the job. " +
+            "Return structured JSON matching the schema.",
+        },
+        ...imageUrls.map((url) => ({
+          type: "input_image",
+          image_url: url,
+        })),
+      ],
+    },
+  ];
+
+  const response = await client.responses.create({
+    model: "gpt-4.1-mini",
+    input,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "junk_volume_estimate",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            estimated_yards: {
+              type: "integer",
+              enum: [2, 4, 6, 8, 10, 12, 14, 16, 18],
             },
-            ...imageUrls.map((url) => ({
-              type: "image_url",
-              image_url: { url },
-            })),
+            confidence: {
+              type: "string",
+              enum: ["low", "medium", "high"],
+            },
+            photos_same_load: {
+              type: "boolean",
+            },
+            separate_piles_count: {
+              type: "integer",
+            },
+            summary: {
+              type: "string",
+            },
+          },
+          required: [
+            "estimated_yards",
+            "confidence",
+            "photos_same_load",
+            "separate_piles_count",
+            "summary",
           ],
         },
-      ],
-      max_tokens: 200,
-    }),
+      },
+    },
   });
 
-  const data = await resp.json();
-
-  const raw = data?.choices?.[0]?.message?.content || "{}";
+  const raw = response.output_text || "{}";
 
   let parsed = {};
-
   try {
     parsed = JSON.parse(raw);
   } catch {
     parsed = {};
   }
 
-  const yards = Math.max(1, Math.round(Number(parsed.estimated_yards) || 2));
-
-  return yards;
+  return {
+    estimated_yards: Number(parsed.estimated_yards) || 2,
+    confidence: parsed.confidence || "medium",
+    photos_same_load: Boolean(parsed.photos_same_load),
+    separate_piles_count: Number(parsed.separate_piles_count) || 1,
+    summary: parsed.summary || "Estimated from the uploaded photo(s).",
+  };
 }
 
 export default async function handler(req, res) {
+  try {
+    setCors(req, res);
 
-  setCors(req, res);
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+    if (req.method !== "POST") {
+      return fail(res, "Method not allowed", { error: "Method not allowed" }, 405);
+    }
 
-  if (req.method !== "POST") {
-    return fail(res, "Method not allowed", {}, 405);
-  }
+    const token = req.headers["x-tjm-token"];
+    const expected = process.env.BACKEND_TOKEN;
 
-  const token = req.headers["x-tjm-token"];
+    if (!token || !expected || token !== expected) {
+      return fail(res, "Unauthorized", { error: "Invalid backend token" }, 401);
+    }
 
-  if (token !== process.env.BACKEND_TOKEN) {
-    return fail(res, "Unauthorized", {}, 401);
-  }
+    const body = req.body || {};
+    const message = (extractMessage(body) || "").trim();
+    const lower = message.toLowerCase();
+    const imageUrls = getImageUrls(body);
 
-  const body = req.body || {};
+    if (imageUrls.length > 0) {
+      try {
+        if (!process.env.OPENAI_API_KEY) {
+          return reply(
+            res,
+            "Thanks — we received the photo(s). Please WhatsApp us on 07841669084 and we’ll help with the estimate."
+          );
+        }
 
-  const message = (extractMessage(body) || "").trim();
+        const estimate = await estimateFromImages(imageUrls);
 
-  const lower = message.toLowerCase();
-
-  const imageUrls = getImageUrls(body);
-
-  if (imageUrls.length > 0) {
-
-    try {
-
-      if (!hasOpenAiKey()) {
         return reply(
           res,
-          "Thanks — we received the photos. Please call us on 07841669084 and we will help with the estimate."
+          `Estimated volume: ${estimate.estimated_yards} cubic yards.\n\n${estimate.summary}`,
+          {
+            estimate,
+            uploaded_image_urls: imageUrls,
+            next_step: "estimate_complete",
+          }
+        );
+      } catch (err) {
+        console.error("CHAT IMAGE ESTIMATE ERROR:", err);
+
+        return reply(
+          res,
+          "Thanks — we received the photo(s), but I couldn’t estimate them automatically just now. Please WhatsApp us on 07841669084 and we’ll help you."
         );
       }
+    }
 
-      const yards = await estimateFromImages(imageUrls);
-
+    if (!message) {
       return reply(
         res,
-        `Estimated volume: ${yards} cubic yards.\n\nPlease make sure all rubbish is included in the photos.`,
-        {
-          estimate: yards,
-        }
-      );
-
-    } catch (err) {
-
-      console.error("IMAGE ESTIMATE ERROR:", err);
-
-      return reply(
-        res,
-        "Thanks — we received the photos but could not estimate automatically. Please call us on 07841669084."
+        "I’m not sure about that. Please WhatsApp us on 07841669084 and we’ll help you."
       );
     }
-  }
 
-  if (!message || isGreeting(lower)) {
-    return reply(res, "Hi 👋 How can I help you?");
-  }
+    if (isGreeting(lower)) {
+      return reply(res, "Hi 👋 How can I help you?");
+    }
 
-  const postcode = findPostcodeInText(message);
+    const faqReply = getFaqReply(lower);
+    if (faqReply) {
+      return reply(res, faqReply);
+    }
 
-  if (postcode) {
+    const wantsPriceOrQuote =
+      lower.includes("how much") ||
+      lower.includes("price") ||
+      lower.includes("quote") ||
+      lower.includes("cost") ||
+      lower.includes("charge");
+
+    if (wantsPriceOrQuote) {
+      return reply(res, "Please enter your postcode.");
+    }
+
+    const postcode = findPostcodeInText(message);
+    if (postcode) {
+      return reply(
+        res,
+        "What type of waste is it: household, business, trade, green waste, or single items?",
+        { postcode, next_step: "waste_type" }
+      );
+    }
+
+    const wasteType = detectWasteType(lower);
+    if (wasteType !== "unknown") {
+      return reply(
+        res,
+        "Any extras? For example mattresses, sofas, arm chairs, fridges, freezers, or tins of paint.",
+        { waste_type: wasteType, next_step: "extras" }
+      );
+    }
+
+    if (
+      lower === "no" ||
+      lower === "none" ||
+      lower.includes("no extras") ||
+      lower.includes("nothing extra") ||
+      lower.includes("mattress") ||
+      lower.includes("sofa") ||
+      lower.includes("arm chair") ||
+      lower.includes("armchair") ||
+      lower.includes("fridge") ||
+      lower.includes("freezer") ||
+      lower.includes("paint")
+    ) {
+      return reply(
+        res,
+        "Please upload photos of the waste so I can estimate the volume.",
+        { next_step: "photos" }
+      );
+    }
+
     return reply(
       res,
-      "Thanks! What type of rubbish do you have?\nHousehold / Business / Trade / Green waste / Single bulky items",
-      { postcode }
+      "I’m not sure about that. Please WhatsApp us on 07841669084 and we’ll help you."
     );
+  } catch (err) {
+    console.error("CHAT ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Chat failed",
+    });
   }
-
-  const wantsPrice =
-    lower.includes("how much") ||
-    lower.includes("price") ||
-    lower.includes("quote") ||
-    lower.includes("cost");
-
-  if (wantsPrice) {
-    return reply(res, "Sure 👍 What’s the postcode for the collection?");
-  }
-
-  const faq = getFaqReply(lower);
-
-  if (faq) {
-    return reply(res, faq);
-  }
-
-  return reply(
-    res,
-    "I’m not sure about that. Please WhatsApp us on 07841669084 and we’ll help you."
-  );
 }
