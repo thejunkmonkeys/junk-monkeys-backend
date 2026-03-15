@@ -90,7 +90,6 @@ export default async function handler(req, res) {
 
     let jobId = getSingleFieldValue(fields.jobId || fields.job_id);
 
-    // If frontend did not send a job id, create one automatically
     if (!jobId) {
       const { data: newJob, error: newJobError } = await supabase
         .from("jobs")
@@ -108,13 +107,13 @@ export default async function handler(req, res) {
 
       jobId = newJob.id;
     } else {
-      const { data: job, error: jobError } = await supabase
+      const { data: existingJob, error: jobError } = await supabase
         .from("jobs")
         .select("id")
         .eq("id", jobId)
         .single();
 
-      if (jobError || !job) {
+      if (jobError || !existingJob) {
         return res.status(400).json({
           ok: false,
           error: "Invalid jobId",
@@ -189,10 +188,15 @@ export default async function handler(req, res) {
         });
       }
 
+      const { data: publicUrlData } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(storagePath);
+
       uploaded.push({
         id: photoRow.id,
         job_id: photoRow.job_id,
         path: photoRow.path,
+        url: publicUrlData.publicUrl,
         created_at: photoRow.created_at,
         name: originalName,
       });
@@ -202,6 +206,7 @@ export default async function handler(req, res) {
       ok: true,
       jobId,
       files: uploaded,
+      uploaded_image_urls: uploaded.map((file) => file.url),
     });
   } catch (err) {
     console.error("UPLOAD ERROR:", err);
