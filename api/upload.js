@@ -24,7 +24,10 @@ function setCors(req, res) {
 }
 
 function parseForm(req) {
-  const form = formidable({ multiples: true, keepExtensions: true });
+  const form = formidable({
+    multiples: true,
+    keepExtensions: true,
+  });
 
   return new Promise((resolve, reject) => {
     form.parse(req, (err, fields, files) => {
@@ -32,6 +35,15 @@ function parseForm(req) {
       else resolve({ fields, files });
     });
   });
+}
+
+function getSingleFieldValue(value) {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function sanitizeFilename(name) {
+  return String(name || "upload.jpg").replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 export default async function handler(req, res) {
@@ -43,10 +55,12 @@ export default async function handler(req, res) {
     }
 
     if (req.method !== "POST") {
-      return res.status(405).json({ ok: false, error: "Method not allowed" });
+      return res.status(405).json({
+        ok: false,
+        error: "Method not allowed",
+      });
     }
 
-    // Auth check
     const token = req.headers["x-tjm-token"];
     const expected = process.env.BACKEND_TOKEN;
 
@@ -72,13 +86,35 @@ export default async function handler(req, res) {
       SUPABASE_SERVICE_ROLE_KEY
     );
 
-    const { files } = await parseForm(req);
+    const { fields, files } = await parseForm(req);
+
+    const jobId = getSingleFieldValue(fields.jobId || fields.job_id);
+
+    if (!jobId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing jobId",
+      });
+    }
+
+    // Optional: confirm the job exists
+    const { data: job, error: jobError } = await supabase
+      .from("jobs")
+      .select("id")
+      .eq("id", jobId)
+      .single();
+
+    if (jobError || !job) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid jobId",
+      });
+    }
 
     let incoming =
       files.files || files.file || files.images || files.image || [];
 
     if (!Array.isArray(incoming)) incoming = [incoming];
-
     incoming = incoming.flat().filter(Boolean);
 
     if (!incoming.length) {
@@ -93,7 +129,7 @@ export default async function handler(req, res) {
 
     for (const f of incoming) {
       const filepath = f.filepath || f.path;
-      const originalName = f.originalFilename || "upload.jpg";
+      const originalName = sanitizeFilename(f.originalFilename || "upload.jpg");
 
       const ext = (originalName.split(".").pop() || "jpg").toLowerCase();
       const safeExt = ["jpg", "jpeg", "png", "webp"].includes(ext)
@@ -107,48 +143,64 @@ export default async function handler(req, res) {
         "." +
         safeExt;
 
-      const storagePath = `uploads/${filename}`;
+      // Store by jobId, not in one shared uploads folder
+      const storagePath = `${jobId}/${filename}`;
 
       const buffer = fs.readFileSync(filepath);
 
-      const { error } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from(bucket)
         .upload(storagePath, buffer, {
           contentType: f.mimetype || "image/jpeg",
           upsert: false,
         });
 
-      if (error) {
-        console.error("SUPABASE UPLOAD ERROR:", error);
-
+      if (uploadError) {
+        console.error("SUPABASE UPLOAD ERROR:", uploadError);
         return res.status(500).json({
           ok: false,
-          error: error.message,
+          error: uploadError.message,
         });
       }
 
-      const { data } = supabase.storage
-        .from(bucket)
-        .getPublicUrl(storagePath);
+      const { data: photoRow, error: dbError } = await supabase
+        .from("job_photos")
+        .insert({
+          job_id: jobId,
+          path: storagePath,
+        })
+        .select()
+        .single();
+
+      if (dbError) {
+        console.error("JOB_PHOTOS INSERT ERROR:", dbError);
+
+        return res.status(500).json({
+          ok: false,
+          error: dbError.message,
+        });
+      }
 
       uploaded.push({
-        url: data.publicUrl,
-        path: storagePath,
+        id: photoRow.id,
+        job_id: photoRow.job_id,
+        path: photoRow.path,
+        created_at: photoRow.created_at,
         name: originalName,
       });
     }
 
     return res.status(200).json({
       ok: true,
+      jobId,
       files: uploaded,
     });
-
   } catch (err) {
     console.error("UPLOAD ERROR:", err);
 
     return res.status(500).json({
       ok: false,
-      error: "Upload failed",
+      error: err.message || "Upload failed",
     });
   }
 }
