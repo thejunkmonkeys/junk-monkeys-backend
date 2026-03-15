@@ -74,7 +74,7 @@ function extractMessage(body) {
 }
 
 function getImageUrls(body) {
-  const urls =
+  const direct =
     body?.uploaded_image_urls ??
     body?.image_urls ??
     body?.photo_urls ??
@@ -82,8 +82,31 @@ function getImageUrls(body) {
     body?.photos ??
     [];
 
-  if (!Array.isArray(urls)) return [];
-  return urls.filter((u) => typeof u === "string" && u.trim());
+  const urls = [];
+
+  if (Array.isArray(direct)) {
+    for (const item of direct) {
+      if (typeof item === "string" && item.trim()) {
+        urls.push(item.trim());
+      } else if (item && typeof item.url === "string" && item.url.trim()) {
+        urls.push(item.url.trim());
+      } else if (item && typeof item.signedUrl === "string" && item.signedUrl.trim()) {
+        urls.push(item.signedUrl.trim());
+      }
+    }
+  }
+
+  if (Array.isArray(body?.files)) {
+    for (const file of body.files) {
+      if (file && typeof file.url === "string" && file.url.trim()) {
+        urls.push(file.url.trim());
+      } else if (file && typeof file.signedUrl === "string" && file.signedUrl.trim()) {
+        urls.push(file.signedUrl.trim());
+      }
+    }
+  }
+
+  return [...new Set(urls)];
 }
 
 function normalizePostcode(raw) {
@@ -189,12 +212,7 @@ async function estimateFromImages(imageUrls) {
         {
           type: "input_text",
           text:
-            "You are estimating rubbish volume for a UK junk removal company. " +
-            "The customer may upload multiple photos. Some photos may show the same rubbish from different angles. " +
-            "Do not double count the same pile. Only add volumes together if the photos clearly show separate piles or separate waste groups. " +
-            "Return the closest yard bucket only from: 2, 4, 6, 8, 10, 12, 14, 16, 18. " +
-            "Estimate volume only. Do not price the job. " +
-            "Return structured JSON matching the schema.",
+            "You are estimating rubbish volume for a UK junk removal company. The customer may upload multiple photos. Some photos may show the same rubbish from different angles. Do not double count the same pile. Only add volumes together if the photos clearly show separate piles or separate waste groups. Return the closest yard bucket only from: 2, 4, 6, 8, 10, 12, 14, 16, 18. Estimate volume only. Do not price the job. Return structured JSON matching the schema.",
         },
         ...imageUrls.map((url) => ({
           type: "input_image",
@@ -286,6 +304,10 @@ export default async function handler(req, res) {
     const message = (extractMessage(body) || "").trim();
     const lower = message.toLowerCase();
     const imageUrls = getImageUrls(body);
+
+    console.log("CHAT BODY KEYS:", Object.keys(body || {}));
+    console.log("CHAT IMAGE URLS:", imageUrls);
+    console.log("CHAT FILES:", body?.files || null);
 
     if (imageUrls.length > 0) {
       try {
