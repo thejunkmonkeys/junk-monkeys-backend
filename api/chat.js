@@ -252,27 +252,41 @@ function getLoadLabel(estimatedYards) {
 function buildVisionPrompt(context) {
   const postcode = context?.postcode || "unknown";
   const wasteType = context?.wasteType || "unknown";
-  const extras = context?.extras || "unknown";
+  const extras = context?.extras || "none";
 
   return [
-    "You are estimating UK rubbish removal volume from customer photos for The Junk Monkeys.",
-    "Be practical and conservative.",
-    "Return ONLY valid JSON.",
-    "Estimate the visible rubbish volume in cubic yards.",
-    "Use a realistic range when uncertain.",
-    "If the image is unclear, still provide your best estimate and mention uncertainty in the notes.",
-    "Context:",
-    `- postcode: ${postcode}`,
-    `- waste_type: ${wasteType}`,
-    `- extras: ${extras}`,
-    "Required JSON shape:",
-    '{',
-    '  "estimated_yards_min": number,',
-    '  "estimated_yards_max": number,',
+    "You are estimating rubbish removal volume from customer photos for a UK rubbish company.",
+    "Estimate ONLY the rubbish that is actually visible in the uploaded photo or photos.",
+    "Do not guess hidden waste.",
+    "Do not assume there is extra rubbish outside the photos.",
+    "Do not add a safety buffer.",
+    "Return ONE exact whole-number cubic-yard estimate only.",
+    "Never return a range.",
+    "Never return wording like 1-2 yards, 2-3 yards, around 2-3 yards, or approximately 2-3 yards.",
+    "Pick the single most realistic cubic-yard figure based only on what is visible in the photos.",
+    "Customers are told to include ALL rubbish in the photos, including any extras.",
+    "Extras such as fridges, freezers, mattresses, sofas, armchairs, tyres, and paint may be present, but the system handles any extra pricing separately.",
+    "Do not describe extras in the customer-facing wording.",
+    "Useful size references:",
+    "- Standard fridge freezer ≈ 1 cubic yard",
+    "- Standard mattress ≈ 1 cubic yard",
+    "- 3 seat sofa ≈ 2 cubic yards",
+    "- Armchair ≈ 1 cubic yard",
+    "- Washing machine ≈ 1 cubic yard",
+    "- Wheelie bin ≈ 0.25 cubic yards",
+    "- Black bin bag ≈ 0.1 cubic yards",
+    "A typical rubbish truck holds about 18 cubic yards.",
+    "Return ONLY valid JSON in this exact shape:",
+    "{",
+    '  "estimated_yards": number,',
     '  "load_label": string,',
     '  "summary": string,',
     '  "notes": string',
-    '}',
+    "}",
+    "Context:",
+    `- postcode: ${postcode}`,
+    `- waste_type: ${wasteType}`,
+    `- extras mentioned: ${extras}`,
   ].join("\n");
 }
 
@@ -325,7 +339,7 @@ async function estimateFromImages(imageUrls, context) {
     },
     body: JSON.stringify({
       model: "gpt-4o",
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -346,16 +360,14 @@ async function estimateFromImages(imageUrls, context) {
   const raw = data?.choices?.[0]?.message?.content || "{}";
   const parsed = JSON.parse(raw);
 
-  const min = Number(parsed.estimated_yards_min) || 0;
-  const max = Number(parsed.estimated_yards_max) || min || 0;
-  const midpoint = (min + max) / 2;
-  const loadLabel = parsed.load_label || getLoadLabel(midpoint || max || 0);
+  const estimatedYardsRaw = Number(parsed.estimated_yards) || 0;
+  const estimatedYards = Math.max(1, Math.round(estimatedYardsRaw));
+  const loadLabel = parsed.load_label || getLoadLabel(estimatedYards);
   const summary = parsed.summary || "Estimated from the uploaded photo(s).";
   const notes = parsed.notes || "";
 
   return {
-    min,
-    max,
+    estimatedYards,
     loadLabel,
     summary,
     notes,
@@ -363,12 +375,7 @@ async function estimateFromImages(imageUrls, context) {
 }
 
 function buildEstimateReply(estimate) {
-  const rangeText =
-    estimate.min && estimate.max && estimate.min !== estimate.max
-      ? `${estimate.min}–${estimate.max}`
-      : `${estimate.max || estimate.min}`;
-
-  let text = `Estimated volume: ${rangeText} cubic yards.\nThat is ${estimate.loadLabel}.`;
+  let text = `Estimated volume: ${estimate.estimatedYards} cubic yards.`;
 
   if (estimate.summary) {
     text += `\n\n${estimate.summary}`;
@@ -378,7 +385,8 @@ function buildEstimateReply(estimate) {
     text += `\n\nNotes: ${estimate.notes}`;
   }
 
-  text += "\n\nIf you'd like, send one more photo from another angle for a tighter estimate, or use the pink button above to book online.";
+  text +=
+    "\n\nPlease make sure all rubbish is included in the photos, including any extra items. We estimate using only what is visible in the photos.";
 
   return text;
 }
@@ -415,7 +423,6 @@ export default async function handler(req, res) {
     lastBot.includes("fridge") ||
     lastBot.includes("sofa");
 
-  // NEW: if uploaded photos exist, estimate them before falling back
   if (imageUrls.length > 0) {
     try {
       if (!hasOpenAiKey()) {
@@ -438,7 +445,7 @@ export default async function handler(req, res) {
       console.error("CHAT IMAGE ESTIMATE ERROR:", err);
       return reply(
         res,
-        "Thanks — we received the photo(s), but I couldn’t estimate them automatically just now. Please send one more photo from another angle or call us on 07841 669084."
+        "Thanks — we received the photo(s), but I couldn’t estimate them automatically just now. Please send one more photo showing all of the rubbish clearly, including any extra items, or call us on 07841 669084."
       );
     }
   }
@@ -470,7 +477,7 @@ export default async function handler(req, res) {
   if (botAskedExtras && looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
-      "Great. Please upload 1–3 photos of the rubbish and we’ll estimate it.",
+      "Great. Please upload 1–3 photos showing all of the rubbish clearly, including any extra items. We will estimate one exact cubic-yard size using only what is visible in the photos.",
       { next_step: "photos" }
     );
   }
@@ -478,7 +485,7 @@ export default async function handler(req, res) {
   if (looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
-      "Great. Please upload 1–3 photos of the rubbish and we’ll estimate it.",
+      "Great. Please upload 1–3 photos showing all of the rubbish clearly, including any extra items. We will estimate one exact cubic-yard size using only what is visible in the photos.",
       { next_step: "photos" }
     );
   }
