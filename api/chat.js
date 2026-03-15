@@ -45,7 +45,8 @@ function extractMessage(body) {
 }
 
 function getMessagesArray(body) {
-  const msgs = body?.messages ?? body?.chat ?? body?.history ?? body?.conversation;
+  const msgs =
+    body?.messages ?? body?.chat ?? body?.history ?? body?.conversation;
   return Array.isArray(msgs) ? msgs : [];
 }
 
@@ -100,7 +101,16 @@ function outwardCode(pcNoSpace) {
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
-  const localLS = new Set(["LS10", "LS11", "LS9", "LS8", "LS7", "LS26", "LS27", "LS28"]);
+  const localLS = new Set([
+    "LS10",
+    "LS11",
+    "LS9",
+    "LS8",
+    "LS7",
+    "LS26",
+    "LS27",
+    "LS28",
+  ]);
   return localLS.has(outward);
 }
 
@@ -172,9 +182,10 @@ function getFaqReply(lower) {
     lower.includes("areas do you cover") ||
     lower.includes("do you cover") ||
     lower.includes("coverage") ||
-    lower.includes("locations")
+    lower.includes("locations") ||
+    lower.includes("area do you cover")
   ) {
-    return "We cover most locations across the country. Send me your postcode and I’ll point you in the right direction for a quote.";
+    return "We cover most of the country.";
   }
 
   if (
@@ -183,7 +194,7 @@ function getFaqReply(lower) {
     lower.includes("hours") ||
     lower.includes("opening")
   ) {
-    return "We operate Monday to Friday, 7am – 5pm. If you'd like a quote, just send me your postcode.";
+    return "We work from 7:30 to 5.";
   }
 
   if (
@@ -357,10 +368,16 @@ async function estimateFromImages(imageUrls, context) {
     throw new Error(data?.error?.message || "OpenAI request failed");
   }
 
-  const raw = data?.choices?.[0]?.message?.content || "{}";
-  const parsed = JSON.parse(raw);
+  let parsed = {};
+  try {
+    const raw = data?.choices?.[0]?.message?.content || "{}";
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error("OPENAI JSON PARSE ERROR:", err);
+    parsed = {};
+  }
 
-  const estimatedYardsRaw = Number(parsed.estimated_yards) || 0;
+  const estimatedYardsRaw = Number(parsed.estimated_yards) || 2;
   const estimatedYards = Math.max(1, Math.round(estimatedYardsRaw));
   const loadLabel = parsed.load_label || getLoadLabel(estimatedYards);
   const summary = parsed.summary || "Estimated from the uploaded photo(s).";
@@ -451,7 +468,7 @@ export default async function handler(req, res) {
   }
 
   if (!message || isGreeting(lower)) {
-    return reply(res, "Hi 👋 How can I help you today?");
+    return reply(res, "Hi 👋 How can I help you?");
   }
 
   const foundPc = findPostcodeInText(message);
@@ -508,4 +525,6 @@ export default async function handler(req, res) {
 
   return reply(
     res,
-    "Sorry, I can't answer that at the moment. Please call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm.
+    "I’m not sure about that. Please WhatsApp us on 07841669084 and we’ll help you."
+  );
+}
