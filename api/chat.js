@@ -68,6 +68,7 @@ function reply(res, text, extra = {}) {
   });
 }
 
+// --- Postcode helpers ---
 function normalizePostcode(raw) {
   if (!raw) return null;
   const s = raw.toUpperCase().trim().replace(/\s+/g, "");
@@ -93,6 +94,7 @@ function isLocalPostcode(pcNoSpace) {
   return localLS.has(outward);
 }
 
+// --- Waste type detection ---
 function detectWasteType(lower) {
   if (lower.includes("house")) return "household";
   if (lower.includes("business") || lower.includes("commercial")) return "business";
@@ -119,13 +121,26 @@ function looksLikeExtrasAnswer(lower) {
   return false;
 }
 
+// Greeting detection
 function isGreeting(lower) {
   return [
     "hi","hello","hey","hiya","good morning","good afternoon","good evening"
   ].includes(lower.trim());
 }
 
+// --- FAQ replies ---
 function getFaqReply(lower) {
+
+  // How service works
+  if (
+    lower.includes("how do your services work") ||
+    lower.includes("how does it work") ||
+    lower.includes("how do you work") ||
+    lower.includes("how does your service work") ||
+    lower.includes("how does rubbish removal work")
+  ) {
+    return "You can book a collection through our online booking portal. On the day of collection our team will call to arrange a time. We arrive in an 18 cubic yard truck, load the rubbish for you, and take it away for responsible disposal.";
+  }
 
   // Areas covered
   if (
@@ -140,17 +155,30 @@ function getFaqReply(lower) {
   }
 
   // Opening hours
-  if (lower.includes("time") || lower.includes("open") || lower.includes("hours")) {
-    return "We usually operate Monday to Friday, 7am – 5pm. If you'd like a quote, just send me your postcode.";
+  if (
+    lower.includes("time") ||
+    lower.includes("open") ||
+    lower.includes("hours") ||
+    lower.includes("opening")
+  ) {
+    return "We operate Monday to Friday, 7am – 5pm. If you'd like a quote, just send me your postcode.";
   }
 
   // Same day
-  if (lower.includes("same day") || lower.includes("today")) {
+  if (
+    lower.includes("same day") ||
+    lower.includes("today") ||
+    lower.includes("urgent")
+  ) {
     return "We may be able to offer same-day collection depending on availability. Send me your postcode and I can help with a quote.";
   }
 
   // Waste types
-  if (lower.includes("what do you take") || lower.includes("what waste")) {
+  if (
+    lower.includes("what do you take") ||
+    lower.includes("what waste") ||
+    lower.includes("what rubbish do you take")
+  ) {
     return "We usually collect household rubbish, furniture, garden waste, bulky items and some commercial waste. If you'd like a quote, just send your postcode.";
   }
 
@@ -270,7 +298,7 @@ export default async function handler(req, res) {
   // FINAL FALLBACK
   return reply(
     res,
-    "Sorry, I can't answer that at the moment. Please send us a meessage on whatsapp or call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm."
+    "Sorry, I can't answer that at the moment. Please call us on 07841 669084.\n\nOur team is available Monday to Friday, 7am – 5pm."
   );
 
 }
