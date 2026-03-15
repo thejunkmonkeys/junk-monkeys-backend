@@ -1,8 +1,14 @@
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 function setCors(req, res) {
   const allowed = new Set([
@@ -281,6 +287,28 @@ async function estimateFromImages(imageUrls) {
   };
 }
 
+async function saveEstimateToJob(body, estimate) {
+  const resolvedJobId = body?.jobId || body?.job_id;
+
+  if (!resolvedJobId) return;
+
+  try {
+    const { error } = await supabase
+      .from("jobs")
+      .update({
+        estimated_yards: estimate.estimated_yards,
+        recommended_loads: { loads: [estimate.estimated_yards] },
+      })
+      .eq("id", resolvedJobId);
+
+    if (error) {
+      console.error("SAVE ESTIMATE TO JOB ERROR:", error);
+    }
+  } catch (err) {
+    console.error("SAVE ESTIMATE TO JOB EXCEPTION:", err);
+  }
+}
+
 export default async function handler(req, res) {
   try {
     setCors(req, res);
@@ -305,10 +333,6 @@ export default async function handler(req, res) {
     const lower = message.toLowerCase();
     const imageUrls = getImageUrls(body);
 
-    console.log("CHAT BODY KEYS:", Object.keys(body || {}));
-    console.log("CHAT IMAGE URLS:", imageUrls);
-    console.log("CHAT FILES:", body?.files || null);
-
     if (imageUrls.length > 0) {
       try {
         if (!process.env.OPENAI_API_KEY) {
@@ -319,6 +343,8 @@ export default async function handler(req, res) {
         }
 
         const estimate = await estimateFromImages(imageUrls);
+
+        await saveEstimateToJob(body, estimate);
 
         return reply(
           res,
