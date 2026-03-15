@@ -1,10 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
-import formidable from "formidable";
-import fs from "fs";
+import OpenAI from "openai";
 
-export const config = {
-  api: { bodyParser: false },
-};
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 function setCors(req, res) {
   const allowed = new Set([
@@ -23,197 +21,99 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
-function parseForm(req) {
-  const form = formidable({
-    multiples: true,
-    keepExtensions: true,
-  });
-
-  return new Promise((resolve, reject) => {
-    form.parse(req, (err, fields, files) => {
-      if (err) reject(err);
-      else resolve({ fields, files });
-    });
-  });
-}
-
-function getSingleFieldValue(value) {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
-
-function sanitizeFilename(name) {
-  return String(name || "upload.jpg").replace(/[^a-zA-Z0-9._-]/g, "_");
-}
-
 export default async function handler(req, res) {
+  setCors(req, res);
+
+  if (req.method === "OPTIONS") return res.status(204).end();
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
   try {
-    setCors(req, res);
+    const { photo_urls = [] } = req.body || {};
 
-    if (req.method === "OPTIONS") {
-      return res.status(204).end();
-    }
-
-    if (req.method !== "POST") {
-      return res.status(405).json({
-        ok: false,
-        error: "Method not allowed",
-      });
-    }
-
-    const token = req.headers["x-tjm-token"];
-    const expected = process.env.BACKEND_TOKEN;
-
-    if (!token || token !== expected) {
-      return res.status(401).json({
-        ok: false,
-        error: "Invalid backend token",
-      });
-    }
-
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing Supabase configuration",
-      });
-    }
-
-    const supabase = createClient(
-      SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE_KEY
-    );
-
-    const { fields, files } = await parseForm(req);
-
-    let jobId = getSingleFieldValue(fields.jobId || fields.job_id);
-
-    if (!jobId) {
-      const { data: newJob, error: newJobError } = await supabase
-        .from("jobs")
-        .insert({})
-        .select("id")
-        .single();
-
-      if (newJobError || !newJob?.id) {
-        console.error("JOB CREATE ERROR:", newJobError);
-        return res.status(500).json({
-          ok: false,
-          error: "Could not create job",
-        });
-      }
-
-      jobId = newJob.id;
-    } else {
-      const { data: existingJob, error: jobError } = await supabase
-        .from("jobs")
-        .select("id")
-        .eq("id", jobId)
-        .single();
-
-      if (jobError || !existingJob) {
-        return res.status(400).json({
-          ok: false,
-          error: "Invalid jobId",
-        });
-      }
-    }
-
-    let incoming =
-      files.files || files.file || files.images || files.image || [];
-
-    if (!Array.isArray(incoming)) incoming = [incoming];
-    incoming = incoming.flat().filter(Boolean);
-
-    if (!incoming.length) {
+    if (!Array.isArray(photo_urls) || photo_urls.length === 0) {
       return res.status(400).json({
         ok: false,
-        error: "No files received",
+        error: "photo_urls must be a non-empty array",
       });
     }
 
-    const bucket = "chat-uploads";
-    const uploaded = [];
+    const input = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You are estimating rubbish volume for a UK junk removal company. " +
+              "The customer may upload multiple photos. Some photos may show the same rubbish from different angles. " +
+              "Do not double count the same pile. Only add volumes together if the photos clearly show separate piles or separate waste groups. " +
+              "Return the closest yard bucket only from: 2, 4, 6, 8, 10, 12, 14, 16, 18. " +
+              "Estimate volume only. Do not price the job. " +
+              "Return structured JSON matching the schema.",
+          },
+          ...photo_urls.map((url) => ({
+            type: "input_image",
+            image_url: url,
+          })),
+        ],
+      },
+    ];
 
-    for (const f of incoming) {
-      const filepath = f.filepath || f.path;
-      const originalName = sanitizeFilename(f.originalFilename || "upload.jpg");
+    const response = await client.responses.create({
+      model: "gpt-4.1-mini",
+      input,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "junk_volume_estimate",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              estimated_yards: {
+                type: "integer",
+                enum: [2, 4, 6, 8, 10, 12, 14, 16, 18],
+              },
+              confidence: {
+                type: "string",
+                enum: ["low", "medium", "high"],
+              },
+              photos_same_load: {
+                type: "boolean",
+              },
+              separate_piles_count: {
+                type: "integer",
+              },
+              summary: {
+                type: "string",
+              },
+            },
+            required: [
+              "estimated_yards",
+              "confidence",
+              "photos_same_load",
+              "separate_piles_count",
+              "summary",
+            ],
+          },
+        },
+      },
+    });
 
-      const ext = (originalName.split(".").pop() || "jpg").toLowerCase();
-      const safeExt = ["jpg", "jpeg", "png", "webp"].includes(ext)
-        ? ext
-        : "jpg";
-
-      const filename =
-        Date.now() +
-        "-" +
-        Math.random().toString(16).slice(2) +
-        "." +
-        safeExt;
-
-      const storagePath = `${jobId}/${filename}`;
-      const buffer = fs.readFileSync(filepath);
-
-      const { error: uploadError } = await supabase.storage
-        .from(bucket)
-        .upload(storagePath, buffer, {
-          contentType: f.mimetype || "image/jpeg",
-          upsert: false,
-        });
-
-      if (uploadError) {
-        console.error("SUPABASE UPLOAD ERROR:", uploadError);
-        return res.status(500).json({
-          ok: false,
-          error: uploadError.message,
-        });
-      }
-
-      const { data: photoRow, error: dbError } = await supabase
-        .from("job_photos")
-        .insert({
-          job_id: jobId,
-          path: storagePath,
-        })
-        .select()
-        .single();
-
-      if (dbError) {
-        console.error("JOB_PHOTOS INSERT ERROR:", dbError);
-        return res.status(500).json({
-          ok: false,
-          error: dbError.message,
-        });
-      }
-
-      const { data: publicUrlData } = supabase.storage
-        .from(bucket)
-        .getPublicUrl(storagePath);
-
-      uploaded.push({
-        id: photoRow.id,
-        job_id: photoRow.job_id,
-        path: photoRow.path,
-        url: publicUrlData.publicUrl,
-        created_at: photoRow.created_at,
-        name: originalName,
-      });
-    }
+    const raw = response.output_text;
+    const parsed = JSON.parse(raw);
 
     return res.status(200).json({
       ok: true,
-      jobId,
-      files: uploaded,
-      uploaded_image_urls: uploaded.map((file) => file.url),
+      ...parsed,
     });
-  } catch (err) {
-    console.error("UPLOAD ERROR:", err);
-
+  } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: err.message || "Upload failed",
+      error: error.message || "Photo analysis failed",
     });
   }
 }
