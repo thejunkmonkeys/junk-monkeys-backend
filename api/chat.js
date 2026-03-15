@@ -89,6 +89,7 @@ function findPostcodeInText(text) {
 function outwardCode(pcNoSpace) {
   return pcNoSpace.slice(0, -3);
 }
+
 function isLocalPostcode(pcNoSpace) {
   const outward = outwardCode(pcNoSpace);
   if (outward.startsWith("WF")) return true;
@@ -106,8 +107,9 @@ function detectWasteType(lower) {
     lower.includes("bulky") ||
     lower.includes("single bulky") ||
     lower.includes("single item")
-  )
+  ) {
     return "single_bulky_items";
+  }
   return "unknown";
 }
 
@@ -137,12 +139,68 @@ function looksLikeExtrasAnswer(lower) {
     lower === "none" ||
     lower.includes("no extras") ||
     lower.includes("nothing extra")
-  ) return true;
+  ) {
+    return true;
+  }
 
   if (EXTRAS_KEYWORDS.some((k) => lower.includes(k))) return true;
 
-  // IMPORTANT: we DO NOT treat "any number" as extras (that broke the flow)
   return false;
+}
+
+function isGreeting(lower) {
+  return [
+    "hi",
+    "hello",
+    "hey",
+    "hiya",
+    "good morning",
+    "good afternoon",
+    "good evening",
+  ].includes(lower.trim());
+}
+
+function getFaqReply(lower) {
+  if (
+    lower.includes("sofa") ||
+    lower.includes("sofas") ||
+    lower.includes("mattress") ||
+    lower.includes("fridge") ||
+    lower.includes("freezer") ||
+    lower.includes("garden waste") ||
+    lower.includes("green waste") ||
+    lower.includes("house clearance") ||
+    lower.includes("commercial waste")
+  ) {
+    return "Yes, we can usually help with that. If you'd like, I can give you a quick quote.";
+  }
+
+  if (
+    lower.includes("area") ||
+    lower.includes("areas") ||
+    lower.includes("cover") ||
+    lower.includes("postcode")
+  ) {
+    return "Send me your postcode and I’ll point you in the right direction for a quote.";
+  }
+
+  if (
+    lower.includes("same day") ||
+    lower.includes("today") ||
+    lower.includes("urgent")
+  ) {
+    return "We may be able to help, depending on availability. If you'd like a quick quote, send me your postcode.";
+  }
+
+  if (
+    lower.includes("book online") ||
+    lower.includes("booking") ||
+    lower.includes("book a collection")
+  ) {
+    return "You can book online using the pink button above. If you'd like a quick quote first, just send me your postcode.";
+  }
+
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -176,67 +234,81 @@ export default async function handler(req, res) {
     lastBot.includes("sofas") ||
     lastBot.includes("arm chairs");
 
-  // 1) If user includes postcode -> ask waste type (don’t mention local/non-local)
+  // 1) Greeting / first message
+  if (!message || isGreeting(lower)) {
+    return reply(res, "Hi 👋 How can I help you today?");
+  }
+
+  // 2) If user includes postcode -> ask waste type
   const foundPc = findPostcodeInText(message);
   if (foundPc) {
     const local = isLocalPostcode(foundPc); // internal only
     return reply(
       res,
-      "Thanks! What type of rubbish is it?\nHousehold / Business / Trade / Green waste / Single bulky items",
+      "Thanks. What type of rubbish do you have?\nHousehold / Business / Trade / Green waste / Single bulky items",
       { postcode: foundPc, local_area: local, next_step: "waste_type" }
     );
   }
 
-  // 2) If bot asked waste type, and user answers with one -> ask extras
+  // 3) If bot asked waste type, and user answers with one -> ask extras
   const wasteType = detectWasteType(lower);
 
   if ((botAskedWasteType && wasteType !== "unknown") || wasteType !== "unknown") {
-    // (second condition is fallback if history isn’t sent)
     return reply(
       res,
-      "Thanks! Are there any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nPlease tell me how many of each (or say “none”).",
+      "Thanks. Do you have any extras?\nMattress, Fridge, Freezer, Car tyres, Tin of paint, Sofas, Arm chairs.\nPlease tell me how many of each, or say none.",
       { waste_type: wasteType, next_step: "extras" }
     );
   }
 
-  // 3) If bot asked extras, and user replies with extras/none -> ask for photos
+  // 4) If bot asked extras, and user replies with extras/none -> ask for photos
   if (botAskedExtras && looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
-      "Thanks! Please upload 1–3 photos of the rubbish (or type a short description) and we’ll estimate it.",
+      "Great. Please upload 1–3 photos of the rubbish and we’ll estimate it.",
       { next_step: "photos" }
     );
   }
 
-  // Also allow extras answers even if history missing (fallback)
+  // Also allow extras answers even if history missing
   if (looksLikeExtrasAnswer(lower)) {
     return reply(
       res,
-      "Thanks! Please upload 1–3 photos of the rubbish (or type a short description) and we’ll estimate it.",
+      "Great. Please upload 1–3 photos of the rubbish and we’ll estimate it.",
       { next_step: "photos" }
     );
   }
 
-  // 4) Price/quote intent -> ask postcode
+  // 5) Quote intent -> ask postcode
   const wantsPriceOrQuote =
     lower.includes("how much") ||
     lower.includes("price") ||
     lower.includes("quote") ||
     lower.includes("cost") ||
-    lower.includes("charge");
+    lower.includes("charge") ||
+    lower.includes("estimate");
 
   if (wantsPriceOrQuote) {
-    return reply(res, "No problem — what’s your postcode?");
+    return reply(res, "Sure 👍 What’s the postcode for the collection?");
   }
 
-  // Booking intent
+  // 6) Booking intent
   if (lower.includes("book")) {
     return reply(
       res,
-      "You can book instantly using the pink button above. If you want a quick estimate first, tell me your postcode."
+      "No problem — would you like a quick quote first, or are you ready to book?"
     );
   }
 
-  // Default
-  return reply(res, "Hi! If you want a quote, tell me your postcode.");
+  // 7) Basic FAQ handling
+  const faqReply = getFaqReply(lower);
+  if (faqReply) {
+    return reply(res, faqReply);
+  }
+
+  // 8) Default fallback
+  return reply(
+    res,
+    "Hi 👋 How can I help you today? You can ask a question or request a quote."
+  );
 }
