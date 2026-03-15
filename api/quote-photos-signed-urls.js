@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { supabase } from '../lib/supabase.js';
 import { requireAuth } from '../lib/auth.js';
 
@@ -5,9 +6,13 @@ export default async function handler(req, res) {
   try {
     requireAuth(req);
 
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
     const { job_id, count } = req.body || {};
 
-    if (!job_id || !count || count < 1 || count > 6) {
+    if (!job_id || !Number.isInteger(count) || count < 1 || count > 6) {
       throw new Error('Invalid request');
     }
 
@@ -16,21 +21,21 @@ export default async function handler(req, res) {
     for (let i = 0; i < count; i++) {
       const path = `${job_id}/${crypto.randomUUID()}.jpg`;
 
-      const { data, error } = await supabase
-        .storage
-        .from('job-photos')
+      const { data, error } = await supabase.storage
+        .from('chat-uploads')
         .createSignedUploadUrl(path);
 
       if (error) throw error;
 
       uploads.push({
         path,
-        uploadUrl: data.signedUrl
+        uploadUrl: data.signedUrl,
+        token: data.token
       });
     }
 
-    res.status(200).json({ uploads });
+    return res.status(200).json({ uploads });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return res.status(400).json({ error: err.message });
   }
 }
